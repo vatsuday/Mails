@@ -209,6 +209,49 @@ export function timeAgo(v) {
   return fmtDay(v);
 }
 export const initials = (name) => String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+/** Round avatar with initials; the colour is stable per person. For an email, the part before @ is used. */
+export function avatar(label, key = label, cls = '') {
+  const text = String(label || '').includes('@') ? String(label).split('@')[0].replace(/[._+-]+/g, ' ') : label;
+  let h = 0;
+  for (const ch of String(key || '')) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return html`<span class="av ${cls}" style="--h:${h}" aria-hidden="true">${initials(text)}</span>`;
+}
+
+/** Small dropdown menu next to a button. items: [{ label, icon, danger, onClick }] or '-' for a divider. */
+export function popMenu(anchor, items) {
+  document.querySelector('.pop-menu')?.remove();
+  const m = document.createElement('div');
+  m.className = 'pop-menu';
+  m.setAttribute('role', 'menu');
+  mount(m, html`${items.map((it, i) => (it === '-' ? html`<hr>` : html`<button type="button" role="menuitem" data-i="${i}" class="${it.danger ? 'danger' : ''}">${it.icon ? icon(it.icon) : ''}<span>${it.label}</span></button>`))}`);
+  document.body.append(m);
+  const r = anchor.getBoundingClientRect();
+  const w = m.offsetWidth;
+  const h = m.offsetHeight;
+  m.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w))}px`;
+  m.style.top = `${r.bottom + 6 + h > window.innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6}px`;
+  let close;
+  const outside = (e) => { if (!m.contains(e.target) && !anchor.contains(e.target)) close(); };
+  const key = (e) => { if (e.key === 'Escape') close(); };
+  close = () => {
+    m.remove();
+    document.removeEventListener('mousedown', outside, true);
+    document.removeEventListener('keydown', key);
+    window.removeEventListener('scroll', close, true);
+  };
+  document.addEventListener('mousedown', outside, true);
+  document.addEventListener('keydown', key);
+  window.addEventListener('scroll', close, true);
+  m.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-i]');
+    if (!b) return;
+    close();
+    items[Number(b.dataset.i)].onClick?.();
+  });
+  m.querySelector('button')?.focus();
+  return close;
+}
+
 export const debounce = (fn, ms = 300) => {
   let t;
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
@@ -284,6 +327,20 @@ const P = {
   file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',
   moon: '<path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3"/>',
+  dots: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
+  dotsV: '<circle cx="12" cy="5" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="12" cy="19" r="1.3"/>',
+  sort: '<path d="m7 15 5 5 5-5M7 9l5-5 5 5"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  up: '<path d="m6 15 6-6 6 6"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
+  first: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
+  last: '<path d="m13 17 5-5-5-5M6 17l5-5-5-5"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+  type: '<path d="M4 20h16"/><path d="m6 16 6-12 6 12M8.5 11h7"/>',
+  expand: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+  shrink: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
+  tag: '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
 };
 export const icon = (name, cls = 'icon') => raw(`<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ''}</svg>`);
 

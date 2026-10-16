@@ -123,6 +123,23 @@ try {
   r = await admin('GET', `/api/lists/${listId}/export`);
   check('list export CSV', r.status === 200 && String(r.data).includes('Company'));
 
+  // All contacts (one row per person, across lists)
+  r = await admin('POST', '/api/lists', { name: 'VIP', contacts: [{ email: 'ravi@client.com', name: 'Ravi', data: { Company: 'Acme' } }, { email: 'new@client.com', name: 'Newbie' }] });
+  const vipId = r.data.id;
+  r = await admin('GET', '/api/contacts?sort=email&dir=desc&limit=2');
+  check('all contacts: deduped, sorted, paged', r.data.total === 4 && r.data.rows.length === 2 && r.data.rows[0].email === 'ravi@client.com', JSON.stringify(r.data.rows.map((x) => x.email)));
+  check('all contacts: lists as tags', r.data.rows[0].lists.length === 2);
+  r = await admin('GET', `/api/contacts?list=${vipId}&sort=company`);
+  check('all contacts: filter by list', r.data.total === 2 && r.data.rows[0].email === 'ravi@client.com');
+  r = await admin('POST', '/api/contacts/update', { email: 'ravi@client.com', name: 'Ravi Kumar', data: { Company: 'Acme' } });
+  r = await admin('GET', '/api/contacts?q=kumar');
+  check('contact edit applies to every list', r.data.total === 1 && r.data.rows[0].name === 'Ravi Kumar');
+  r = await admin('POST', '/api/contacts/delete', { emails: ['new@client.com', 'ravi@client.com'], listId: vipId });
+  check('remove from one list only', r.data.deleted === 2);
+  r = await admin('GET', '/api/contacts');
+  check('person stays in other lists', r.data.total === 3 && r.data.rows.some((x) => x.email === 'ravi@client.com'));
+  await admin('DELETE', `/api/lists/${vipId}`);
+
   // Suppression
   r = await admin('POST', '/api/suppressions', { email: 'priya@client.com' });
   check('suppression added', r.status === 200);

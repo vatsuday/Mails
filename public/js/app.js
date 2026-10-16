@@ -126,7 +126,8 @@ const ROUTES = [
   [/^\/bulk$/, () => import('./bulk.js')],
   [/^\/history$/, () => import('./history.js').then((m) => ({ render: m.renderList }))],
   [/^\/history\/(\d+)$/, () => import('./history.js').then((m) => ({ render: m.renderDetail }))],
-  [/^\/contacts$/, () => import('./contacts.js').then((m) => ({ render: m.renderLists }))],
+  [/^\/contacts$/, () => import('./contacts.js').then((m) => ({ render: m.renderAll }))],
+  [/^\/contacts\/lists$/, () => import('./contacts.js').then((m) => ({ render: m.renderLists }))],
   [/^\/contacts\/unsubscribed$/, () => import('./contacts.js').then((m) => ({ render: m.renderSuppressions }))],
   [/^\/contacts\/(\d+)$/, () => import('./contacts.js').then((m) => ({ render: m.renderList }))],
   [/^\/templates$/, () => import('./templates.js')],
@@ -227,7 +228,7 @@ async function dashboard(main) {
       <div class="quick">
         <a href="#/compose"><span class="qi">${icon('send')}</span><span><b>Compose email</b><span>Send to one or a few people</span></span></a>
         <a href="#/bulk"><span class="qi">${icon('bulk')}</span><span><b>Bulk send</b><span>Personalised emails from Excel / CSV</span></span></a>
-        <a href="#/contacts"><span class="qi">${icon('contacts')}</span><span><b>Contact lists</b><span>${fmtNum(d.contacts)} saved contacts</span></span></a>
+        <a href="#/contacts"><span class="qi">${icon('contacts')}</span><span><b>Contacts</b><span>${fmtNum(d.contacts)} saved contacts</span></span></a>
         <a href="#/templates"><span class="qi">${icon('template')}</span><span><b>Templates</b><span>Reusable email designs</span></span></a>
       </div>
       <div class="stats">

@@ -50,9 +50,9 @@ export async function render(main) {
 
   const s = {
     step: 1,
-    tab: handoff?.listIds?.length ? 'lists' : 'file',
+    tab: handoff?.listIds?.length ? 'lists' : handoff?.pasted ? 'paste' : 'file',
     file: null, // { name, columns, rows, emailCol, nameCol }
-    pasted: '',
+    pasted: handoff?.pasted || '',
     listIds: new Set(handoff?.listIds || []),
     listSamples: new Map(), // listId -> { keys, rows }
     saveList: false,

@@ -115,6 +115,8 @@ ALTER TABLE em_messages ADD COLUMN IF NOT EXISTS track_opens BOOLEAN NOT NULL DE
 ALTER TABLE em_recipients ADD COLUMN IF NOT EXISTS open_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE em_recipients ADD COLUMN IF NOT EXISTS opened_at TIMESTAMPTZ;
 ALTER TABLE em_recipients ADD COLUMN IF NOT EXISTS last_opened_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS em_recipients_email ON em_recipients (email);
+CREATE INDEX IF NOT EXISTS em_contacts_email ON em_contacts (email);
 
 -- Supabase exposes the public schema through its REST API. Row level security with no policies
 -- blocks that API completely; this app connects as the database owner, which is not affected.

@@ -1,14 +1,16 @@
 // Contact lists, contacts and unsubscribed addresses.
 import { go } from './app.js';
 import {
-  $, $$, api, busy, confirmBox, debounce, download, dropzone, fmtDateTime, fmtNum, html, icon, modal, mount, qs, readBase64, timeAgo, toast,
+  $, $$, api, avatar, confirmBox, debounce, download, dropzone, fmtDateTime, fmtNum, html, icon, modal, mount, popMenu, qs, readBase64, store,
+  timeAgo, toast,
 } from './common.js';
 import { isAdmin, state } from './state.js';
 
 const EMAIL_RE = /^[^\s@<>()[\]\\,;:"]+@[^\s@<>()[\]\\,;:"]+\.[^\s@<>()[\]\\,;:"]+$/;
 
 const tabsHtml = (on) => html`<div class="tabs">
-  <button data-href="#/contacts" class="${on === 'lists' ? 'on' : ''}">${icon('contacts')} Contact lists</button>
+  <button data-href="#/contacts" class="${on === 'all' ? 'on' : ''}">${icon('users')} All contacts</button>
+  <button data-href="#/contacts/lists" class="${on === 'lists' ? 'on' : ''}">${icon('contacts')} Lists</button>
   <button data-href="#/contacts/unsubscribed" class="${on === 'unsub' ? 'on' : ''}">${icon('ban')} Unsubscribed</button></div>`;
 const wireTabs = (root) => $$('[data-href]', root).forEach((b) => { b.onclick = () => go(b.dataset.href); });
 
@@ -149,133 +151,305 @@ export async function renderLists(main) {
   });
 }
 
-function editContact(c = {}) {
+/** Add / edit a person. When adding, `lists` lets the user choose (or create) the list they go into. */
+function editContact(c = {}, { lists = null, listId = null } = {}) {
+  const editing = Boolean(c.email);
   const extra = Object.entries(c.data || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
   return modal((box, close) => {
-    mount(box, html`<div class="modal-head"><h2>${c.id ? 'Edit contact' : 'Add contact'}</h2><button class="icon-btn" data-close aria-label="Close">${icon('x')}</button></div>
+    mount(box, html`<div class="modal-head"><div class="row" style="gap:12px">${editing ? avatar(c.name || c.email, c.email, 'lg') : ''}
+        <h2>${editing ? 'Edit contact' : 'Add contact'}</h2></div><button class="icon-btn" data-close aria-label="Close">${icon('x')}</button></div>
       <form class="stack">
-        <div class="form-grid"><label class="field">Email<input name="email" type="email" required value="${c.email || ''}" autofocus></label>
-          <label class="field">Name<input name="name" value="${c.name || ''}"></label></div>
+        <div class="form-grid"><label class="field">Email<input name="email" type="email" required value="${c.email || ''}" ${editing ? 'readonly' : 'autofocus'}>
+          ${editing ? html`<span class="hint">To change the address, delete this contact and add the new one.</span>` : ''}</label>
+          <label class="field">Name<input name="name" value="${c.name || ''}" ${editing ? 'autofocus' : ''}></label></div>
+        ${lists ? html`<label class="field">Add to list<select name="list">
+            ${lists.map((l) => html`<option value="${l.id}" ${Number(listId) === l.id ? 'selected' : ''}>${l.name}</option>`)}
+            <option value="new" ${lists.length ? '' : 'selected'}>+ New list…</option></select></label>
+          <label class="field ${lists.length ? 'hidden' : ''}" id="new-list-field">New list name<input name="newList" placeholder="e.g. Customers"></label>` : ''}
         <label class="field">Other details <span class="hint">One per line as <code>Field: value</code>, e.g. <code>Company: Acme</code>. Use them in emails as {{company}}.</span>
           <textarea name="data" rows="5">${extra}</textarea></label>
+        ${editing && c.lists?.length ? html`<p class="small muted">In ${c.lists.length === 1 ? 'list' : 'lists'}: ${c.lists.map((l) => l.name).join(', ')}. Changes apply to all of them.</p>` : ''}
         <div class="modal-actions"><button type="button" class="btn secondary" data-close>Cancel</button><button class="btn">Save</button></div></form>`);
-    box.querySelector('form').onsubmit = (e) => {
+    const form = box.querySelector('form');
+    if (form.list) form.list.onchange = () => $('#new-list-field', box).classList.toggle('hidden', form.list.value !== 'new');
+    form.onsubmit = (e) => {
       e.preventDefault();
-      const f = e.target;
       const data = {};
-      for (const line of f.data.value.split(/\r?\n/)) {
+      for (const line of form.data.value.split(/\r?\n/)) {
         const i = line.indexOf(':');
         if (i > 0) data[line.slice(0, i).trim()] = line.slice(i + 1).trim();
       }
-      close({ email: f.email.value.trim(), name: f.name.value.trim(), data });
+      if (form.list?.value === 'new' && !form.newList.value.trim()) { toast('Give the new list a name.', 'error'); form.newList.focus(); return; }
+      close({ email: form.email.value.trim(), name: form.name.value.trim(), data, list: form.list?.value, newList: form.newList?.value.trim() });
     };
   });
 }
 
-export async function renderList(main, id) {
-  const f = { q: '', page: 1 };
-  const selected = new Set();
-  let list;
-  let lastRows = [];
+const COMPANY_RE = /^(company|organi[sz]ation|firm|business|company name)$/i;
+const companyOf = (r) => {
+  const k = Object.keys(r.data || {}).find((x) => COMPANY_RE.test(x));
+  return k ? r.data[k] : '';
+};
+const PAGE_SIZES = [25, 50, 100, 200];
 
-  const load = async () => {
-    const limit = 50;
-    const d = await api(`/lists/${id}/contacts${qs({ q: f.q, page: f.page, limit })}`);
-    list = d.list;
-    lastRows = d.rows;
-    const pages = Math.max(1, Math.ceil(d.total / limit));
-    $('#l-title').textContent = list.name;
-    $('#l-count').textContent = `${fmtNum(d.total)} ${f.q ? 'matching ' : ''}contacts`;
-    const keys = [...new Set(d.rows.flatMap((r) => Object.keys(r.data || {})))].slice(0, 4);
-    const box = $('#c-table');
-    if (!d.rows.length) {
-      mount(box, html`<div class="empty">${f.q ? 'No contacts match your search.' : 'This list is empty. Add people or import a file.'}</div>`);
-      return drawSel();
-    }
-    mount(box, html`<div class="table-wrap"><table class="data">
-      <thead><tr><th style="width:36px"><input type="checkbox" id="sel-all" aria-label="Select all"></th><th>Email</th><th>Name</th>${keys.map((k) => html`<th>${k}</th>`)}<th>Added</th><th></th></tr></thead>
-      <tbody>${d.rows.map((r) => html`<tr><td><input type="checkbox" data-sel="${r.id}" ${selected.has(r.id) ? 'checked' : ''} aria-label="Select ${r.email}"></td>
-        <td>${r.email}</td><td>${r.name}</td>${keys.map((k) => html`<td class="small">${r.data?.[k] ?? ''}</td>`)}
-        <td class="small muted nowrap">${timeAgo(r.created_at)}</td>
-        <td><button class="icon-btn" data-edit="${r.id}" title="Edit">${icon('edit')}</button></td></tr>`)}</tbody></table></div>
-      <div class="pager"><span></span><div class="row"><button class="btn sm secondary" id="cp-prev" ${f.page <= 1 ? 'disabled' : ''}>${icon('left')}</button>
-        <span>Page ${f.page} of ${pages}</span><button class="btn sm secondary" id="cp-next" ${f.page >= pages ? 'disabled' : ''}>${icon('right')}</button></div></div>`);
-    $('#cp-prev').onclick = () => { f.page -= 1; load(); };
-    $('#cp-next').onclick = () => { f.page += 1; load(); };
-    $('#sel-all').onchange = (e) => { for (const r of d.rows) { if (e.target.checked) selected.add(r.id); else selected.delete(r.id); } load(); };
-    $$('[data-sel]', box).forEach((c) => { c.onchange = () => { if (c.checked) selected.add(Number(c.dataset.sel)); else selected.delete(Number(c.dataset.sel)); drawSel(); }; });
-    $$('[data-edit]', box).forEach((b) => {
-      b.onclick = async () => {
-        const c = lastRows.find((x) => x.id === Number(b.dataset.edit));
-        const r = await editContact(c);
-        if (!r) return;
-        await api(`/lists/${id}/contacts/${c.id}`, { method: 'PATCH', body: r }).then(() => { toast('Saved.', 'ok'); load(); }).catch((err) => toast(err.message, 'error'));
-      };
-    });
-    return drawSel();
-  };
-  const drawSel = () => {
-    $('#del-sel').classList.toggle('hidden', !selected.size);
-    $('#del-sel').textContent = `Delete ${selected.size} selected`;
-  };
+/**
+ * The contacts table (everyone, or the people in one list): selection, sorting, row menu, rows per page.
+ */
+async function contactsTable(main, { listId = null } = {}) {
+  const f = { q: '', sort: 'name', dir: 'asc', page: 1, limit: PAGE_SIZES.includes(store.get('contacts:limit')) ? store.get('contacts:limit') : 50 };
+  const selected = new Map(); // email -> row
+  let rows = [];
+  let total = 0;
+  let lists = await api('/lists');
+  const list = listId ? lists.find((l) => l.id === Number(listId)) : null;
+  if (listId && !list) throw Object.assign(new Error('This contact list no longer exists.'), { status: 404 });
+
+  const sortHead = (key, label) => html`<th><button type="button" class="th-sort ${f.sort === key ? 'on' : ''}" data-sort="${key}">${label}
+    ${icon(f.sort === key ? (f.dir === 'asc' ? 'up' : 'down') : 'sort', 'icon sort-icon')}</button></th>`;
 
   mount(main, html`
-    <a class="crumb" href="#/contacts">${icon('left')} Contacts</a>
-    <div class="page-head"><div><h1 id="l-title">…</h1><p id="l-count"></p></div>
+    ${list ? html`<a class="crumb" href="#/contacts/lists">${icon('left')} Lists</a>` : ''}
+    <div class="page-head"><div><h1>${list ? list.name : 'Contacts'}</h1><p id="c-count">${list ? 'Contact list' : 'Everyone in your contact lists'}</p></div>
       <div class="actions">
-        <button class="btn" id="l-bulk">${icon('send')} Email this list</button>
-        <button class="btn secondary" id="l-add">${icon('plus')} Add person</button>
-        <button class="btn secondary" id="l-import">${icon('upload')} Import</button>
-        <button class="btn secondary" id="l-export">${icon('download')} Export</button>
-        <button class="icon-btn" id="l-rename" title="Rename list">${icon('edit')}</button>
-        <button class="icon-btn" id="l-delete" title="Delete list">${icon('trash')}</button>
+        ${list ? html`<button class="btn secondary" id="l-bulk">${icon('send')} Email this list</button>
+          <button class="btn secondary" id="l-import">${icon('upload')} Import</button>
+          <button class="icon-btn" id="l-more" title="More list actions">${icon('dots')}</button>`
+    : html`<button class="btn secondary" id="c-import">${icon('upload')} Import</button>`}
+        <button class="btn dark" id="c-add">${icon('plus')} Add contact</button>
       </div></div>
-    <div class="toolbar-row"><input type="search" id="c-q" placeholder="Search name, email or any field…"><button class="btn sm danger-outline hidden" id="del-sel"></button></div>
-    <div id="c-table"><div class="loading-block"><span class="spinner"></span></div></div>`);
+    ${list ? '' : tabsHtml('all')}
+    <div class="table-card">
+      <div class="table-top">
+        <div class="sel-bar hidden" id="sel-bar"><b id="sel-n"></b>
+          <button class="btn sm" id="sel-email">${icon('send')} Email</button>
+          <button class="btn sm secondary" id="sel-list">${icon('tag')} Add to list</button>
+          <button class="btn sm danger-outline" id="sel-del">${icon('trash')} ${list ? 'Remove from list' : 'Delete'}</button>
+          <button class="btn sm ghost" id="sel-clear">Clear</button></div>
+        <label class="search-box">${icon('search', 'icon search-icon')}<input type="search" id="c-q" placeholder="Search by name, email or any field…" aria-label="Search contacts"></label>
+      </div>
+      <div id="c-table"><div class="loading-block"><span class="spinner"></span></div></div>
+      <div class="table-foot" id="c-foot"></div>
+    </div>`);
+  wireTabs(main);
 
-  $('#c-q').oninput = debounce(() => { f.q = $('#c-q').value.trim(); f.page = 1; load(); }, 300);
-  $('#l-bulk').onclick = () => { state.handoff = { mode: 'bulk', listIds: [Number(id)] }; go('#/bulk'); };
-  $('#l-export').onclick = () => download(`/api/lists/${id}/export`);
-  $('#l-add').onclick = async () => {
-    const r = await editContact();
-    if (!r) return;
-    await api(`/lists/${id}/contacts`, { method: 'POST', body: { contacts: [r] } })
-      .then((x) => { toast(x.added ? 'Contact added.' : 'This email was already in the list; details updated.', 'ok'); load(); })
+  const load = async () => {
+    const d = await api(`/contacts${qs({ q: f.q, sort: f.sort, dir: f.dir, page: f.page, limit: f.limit, list: listId || '' })}`);
+    rows = d.rows;
+    total = Number(d.total);
+    const pages = Math.max(1, Math.ceil(total / f.limit));
+    if (f.page > pages) { f.page = pages; return load(); }
+    $('#c-count').textContent = `${fmtNum(total)} ${f.q ? 'matching ' : ''}${total === 1 ? 'person' : 'people'}${list ? ' in this list' : ''}`;
+    const showCompany = rows.some((r) => companyOf(r));
+    const box = $('#c-table');
+    if (!rows.length) {
+      mount(box, html`<div class="empty">${icon('users')}<p>${f.q ? 'Nobody matches your search.' : list ? 'This list is empty. Add people or import a file.' : 'No contacts yet. Add someone or import an Excel / CSV file.'}</p></div>`);
+    } else {
+      const allOn = rows.every((r) => selected.has(r.email));
+      mount(box, html`<div class="table-scroll"><table class="data contacts">
+        <thead><tr><th class="cb"><input type="checkbox" id="sel-all" ${allOn ? 'checked' : ''} aria-label="Select all on this page"></th>
+          ${sortHead('name', 'Name')}${sortHead('email', 'Email')}${showCompany ? sortHead('company', 'Company') : ''}
+          <th>Lists</th><th>Status</th>${sortHead('last_sent', 'Last emailed')}<th class="cb"></th></tr></thead>
+        <tbody>${rows.map((r, i) => html`<tr class="${selected.has(r.email) ? 'selected' : ''}" data-i="${i}">
+          <td class="cb"><input type="checkbox" data-sel="${i}" ${selected.has(r.email) ? 'checked' : ''} aria-label="Select ${r.email}"></td>
+          <td><button type="button" class="person" data-open="${i}">${avatar(r.name || r.email, r.email)}<span class="ellipsis"><b>${r.name || r.email.split('@')[0]}</b></span></button></td>
+          <td class="small"><span class="ellipsis" style="display:block;max-width:260px">${r.email}</span></td>
+          ${showCompany ? html`<td class="small">${companyOf(r)}</td>` : ''}
+          <td><div class="tag-list">${r.lists.slice(0, 3).map((l) => html`<a class="tag" href="#/contacts/${l.id}">${l.name}</a>`)}${r.lists.length > 3 ? html`<span class="tag more">+${r.lists.length - 3}</span>` : ''}</div></td>
+          <td class="nowrap">${r.unsubscribed ? html`<span class="dot-status off">Unsubscribed</span>` : r.last_opened ? html`<span class="dot-status ok" title="Last opened ${fmtDateTime(r.last_opened)}">Engaged</span>` : html`<span class="dot-status">Subscribed</span>`}</td>
+          <td class="small muted nowrap">${r.last_sent ? html`<span title="${fmtDateTime(r.last_sent)}">${timeAgo(r.last_sent)}</span>` : 'Never'}</td>
+          <td class="cb"><button class="icon-btn" data-menu="${i}" aria-label="Actions for ${r.email}">${icon('dots')}</button></td>
+        </tr>`)}</tbody></table></div>`);
+    }
+    mount($('#c-foot'), html`
+      <label class="row small" style="gap:8px"><select id="c-limit" aria-label="Rows per page">${PAGE_SIZES.map((n) => html`<option ${n === f.limit ? 'selected' : ''}>${n}</option>`)}</select> rows per page</label>
+      <div class="row small" style="gap:6px"><span style="margin-right:6px">Page <b>${f.page}</b> of <b>${pages}</b></span>
+        <button class="icon-btn page-btn" data-page="1" ${f.page <= 1 ? 'disabled' : ''} title="First page">${icon('first')}</button>
+        <button class="icon-btn page-btn" data-page="${f.page - 1}" ${f.page <= 1 ? 'disabled' : ''} title="Previous page">${icon('left')}</button>
+        <button class="icon-btn page-btn" data-page="${f.page + 1}" ${f.page >= pages ? 'disabled' : ''} title="Next page">${icon('right')}</button>
+        <button class="icon-btn page-btn" data-page="${pages}" ${f.page >= pages ? 'disabled' : ''} title="Last page">${icon('last')}</button></div>`);
+    $('#c-limit').onchange = (e) => { f.limit = Number(e.target.value); f.page = 1; store.set('contacts:limit', f.limit); load(); };
+    $$('[data-page]', main).forEach((b) => { b.onclick = () => { f.page = Number(b.dataset.page); load(); }; });
+    $$('[data-sort]', box).forEach((b) => {
+      b.onclick = () => {
+        if (f.sort === b.dataset.sort) f.dir = f.dir === 'asc' ? 'desc' : 'asc';
+        else { f.sort = b.dataset.sort; f.dir = b.dataset.sort === 'last_sent' ? 'desc' : 'asc'; }
+        f.page = 1;
+        load();
+      };
+    });
+    $('#sel-all')?.addEventListener('change', (e) => {
+      for (const r of rows) { if (e.target.checked) selected.set(r.email, r); else selected.delete(r.email); }
+      load();
+    });
+    $$('[data-sel]', box).forEach((c) => {
+      c.onchange = () => {
+        const r = rows[Number(c.dataset.sel)];
+        if (c.checked) selected.set(r.email, r); else selected.delete(r.email);
+        c.closest('tr').classList.toggle('selected', c.checked);
+        $('#sel-all').checked = rows.every((x) => selected.has(x.email));
+        drawSel();
+      };
+    });
+    $$('[data-open]', box).forEach((b) => { b.onclick = () => edit(rows[Number(b.dataset.open)]); });
+    $$('[data-menu]', box).forEach((b) => { b.onclick = () => rowMenu(b, rows[Number(b.dataset.menu)]); });
+    drawSel();
+    return undefined;
+  };
+
+  const drawSel = () => {
+    $('#sel-bar').classList.toggle('hidden', !selected.size);
+    $('#sel-n').textContent = `${fmtNum(selected.size)} selected`;
+  };
+
+  const emailPeople = (people) => {
+    if (people.length === 1) {
+      state.handoff = { mode: 'compose', to: [people[0].email], names: people[0].name ? { [people[0].email]: people[0].name } : {} };
+      go('#/compose');
+    } else {
+      state.handoff = { mode: 'bulk', pasted: people.map((p) => (p.name ? `${p.name} <${p.email}>` : p.email)).join('\n') };
+      go('#/bulk');
+    }
+  };
+
+  const edit = async (r) => {
+    const v = await editContact(r);
+    if (!v) return;
+    await api('/contacts/update', { method: 'POST', body: { email: r.email, name: v.name, data: v.data } })
+      .then(() => { toast('Saved.', 'ok'); load(); }).catch((err) => toast(err.message, 'error'));
+  };
+
+  const remove = async (people) => {
+    const n = people.length;
+    const what = n === 1 ? people[0].name || people[0].email : `${fmtNum(n)} people`;
+    if (!await confirmBox(list ? `Remove ${what} from this list?` : `Delete ${what}?`,
+      list ? `They stay in your other lists.` : `${n === 1 ? 'This person is' : 'They are'} removed from every contact list. Emails already sent are not affected.`,
+      { ok: list ? 'Remove' : 'Delete', danger: true })) return;
+    await api('/contacts/delete', { method: 'POST', body: { emails: people.map((p) => p.email), listId: listId || null } })
+      .then(() => { for (const p of people) selected.delete(p.email); toast(`${what} ${list ? 'removed' : 'deleted'}.`); load(); })
       .catch((err) => toast(err.message, 'error'));
   };
-  $('#l-import').onclick = async () => {
-    const r = await importContacts({ title: `Import into "${list.name}"` });
-    if (!r?.contacts.length) return;
+
+  const addToList = async (people) => {
+    const v = await modal((box, close) => {
+      mount(box, html`<div class="modal-head"><h2>Add ${fmtNum(people.length)} ${people.length === 1 ? 'person' : 'people'} to a list</h2></div>
+        <form class="stack"><label class="field">List<select name="list">${lists.map((l) => html`<option value="${l.id}">${l.name}</option>`)}<option value="new" ${lists.length ? '' : 'selected'}>+ New list…</option></select></label>
+          <label class="field ${lists.length ? 'hidden' : ''}" id="nl">New list name<input name="name"></label>
+          <div class="modal-actions"><button type="button" class="btn secondary" data-close>Cancel</button><button class="btn">Add</button></div></form>`);
+      const form = box.querySelector('form');
+      form.list.onchange = () => $('#nl', box).classList.toggle('hidden', form.list.value !== 'new');
+      form.onsubmit = (e) => { e.preventDefault(); close({ list: form.list.value, name: form.name.value.trim() }); };
+    });
+    if (!v) return;
+    const contacts = people.map((p) => ({ email: p.email, name: p.name, data: p.data }));
     try {
-      const total = await uploadContacts(id, r.contacts);
-      toast(`Import finished: ${importSummary(total)}.`, 'ok');
+      if (v.list === 'new') {
+        if (!v.name) { toast('Give the new list a name.', 'error'); return; }
+        await api('/lists', { method: 'POST', body: { name: v.name, contacts } });
+      } else {
+        await api(`/lists/${v.list}/contacts`, { method: 'POST', body: { contacts } });
+      }
+      lists = await api('/lists');
+      toast('Added to the list.', 'ok');
       load();
     } catch (err) { toast(err.message, 'error'); }
   };
-  $('#l-rename').onclick = async () => {
+
+  const setSubscribed = async (r, on) => {
+    try {
+      if (on) await api(`/suppressions/${encodeURIComponent(r.email)}`, { method: 'DELETE' });
+      else await api('/suppressions', { method: 'POST', body: { email: r.email } });
+      toast(on ? `${r.email} will receive bulk emails again.` : `${r.email} won't receive bulk emails any more.`, 'ok');
+      load();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  const rowMenu = (btn, r) => popMenu(btn, [
+    { label: 'Send email', icon: 'send', onClick: () => emailPeople([r]) },
+    { label: 'Edit details', icon: 'edit', onClick: () => edit(r) },
+    { label: 'Copy email address', icon: 'copy', onClick: () => navigator.clipboard?.writeText(r.email).then(() => toast('Copied.')) },
+    { label: 'Add to list…', icon: 'tag', onClick: () => addToList([r]) },
+    '-',
+    r.unsubscribed
+      ? (isAdmin() ? { label: 'Subscribe again', icon: 'check', onClick: () => setSubscribed(r, true) } : null)
+      : { label: 'Unsubscribe from bulk emails', icon: 'ban', onClick: () => setSubscribed(r, false) },
+    { label: list ? 'Remove from this list' : 'Delete contact', icon: 'trash', danger: true, onClick: () => remove([r]) },
+  ].filter(Boolean));
+
+  $('#c-q').oninput = debounce(() => { f.q = $('#c-q').value.trim(); f.page = 1; load(); }, 300);
+  $('#sel-clear').onclick = () => { selected.clear(); load(); };
+  $('#sel-email').onclick = () => emailPeople([...selected.values()]);
+  $('#sel-del').onclick = () => remove([...selected.values()]);
+  $('#sel-list').onclick = () => addToList([...selected.values()]);
+
+  $('#c-add').onclick = async () => {
+    const v = await editContact({}, { lists, listId });
+    if (!v) return;
+    const contact = { email: v.email, name: v.name, data: v.data };
+    try {
+      if (v.list === 'new') {
+        const r = await api('/lists', { method: 'POST', body: { name: v.newList, contacts: [contact] } });
+        if (!r.added) throw new Error('Enter a valid email address.');
+      } else {
+        const r = await api(`/lists/${v.list}/contacts`, { method: 'POST', body: { contacts: [contact] } });
+        if (!r.added) toast('This person was already in that list; details updated.');
+      }
+      lists = await api('/lists');
+      toast('Contact saved.', 'ok');
+      load();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
+  const importInto = async (id, name) => {
+    const r = await importContacts({ title: `Import into "${name}"` });
+    if (!r?.contacts.length) return;
+    try {
+      const t = await uploadContacts(id, r.contacts);
+      toast(`Import finished: ${importSummary(t)}.`, 'ok');
+      load();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  $('#c-import')?.addEventListener('click', async () => {
+    const r = await importContacts({ askName: true, title: 'Import contacts into a new list' });
+    if (!r) return;
+    if (!r.name) { toast('Give the list a name.', 'error'); return; }
+    try {
+      const first = await api('/lists', { method: 'POST', body: { name: r.name, contacts: r.contacts.slice(0, 2000) }, timeout: 120000 });
+      const t = await uploadContacts(first.id, r.contacts, first);
+      lists = await api('/lists');
+      toast(`List "${r.name}" created: ${importSummary(t)}.`, 'ok');
+      load();
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
+  if (list) {
+    $('#l-bulk').onclick = () => { state.handoff = { mode: 'bulk', listIds: [list.id] }; go('#/bulk'); };
+    $('#l-import').onclick = () => importInto(list.id, list.name);
+    $('#l-more').onclick = (e) => popMenu(e.currentTarget, [
+      { label: 'Export to CSV', icon: 'download', onClick: () => download(`/api/lists/${list.id}/export`) },
+      { label: 'Rename list', icon: 'edit', onClick: renameList },
+      '-',
+      { label: 'Delete list', icon: 'trash', danger: true, onClick: deleteList },
+    ]);
+  }
+  async function renameList() {
     const name = await modal((box, close) => {
       mount(box, html`<div class="modal-head"><h2>Rename list</h2></div><form class="stack"><input name="n" value="${list.name}" required autofocus>
         <div class="modal-actions"><button type="button" class="btn secondary" data-close>Cancel</button><button class="btn">Save</button></div></form>`);
       box.querySelector('form').onsubmit = (e) => { e.preventDefault(); close(e.target.n.value.trim()); };
     });
     if (!name) return;
-    await api(`/lists/${id}`, { method: 'PATCH', body: { name } }).then(load).catch((err) => toast(err.message, 'error'));
-  };
-  $('#l-delete').onclick = async () => {
-    if (!await confirmBox('Delete this list?', `"${list.name}" and all its contacts will be deleted. Emails already sent are not affected.`, { ok: 'Delete list', danger: true })) return;
-    await api(`/lists/${id}`, { method: 'DELETE' }).then(() => { toast('List deleted.'); go('#/contacts'); }).catch((err) => toast(err.message, 'error'));
-  };
-  $('#del-sel').onclick = async (e) => {
-    if (!await confirmBox(`Delete ${selected.size} contacts?`, 'They will be removed from this list.', { ok: 'Delete', danger: true })) return;
-    await busy(e.currentTarget, async () => {
-      const r = await api(`/lists/${id}/contacts/delete`, { method: 'POST', body: { ids: [...selected] } });
-      toast(`${fmtNum(r.deleted)} deleted.`);
-      selected.clear();
-      await load();
-    });
-  };
+    await api(`/lists/${list.id}`, { method: 'PATCH', body: { name } }).then(() => go(`#/contacts/${list.id}`)).catch((err) => toast(err.message, 'error'));
+  }
+  async function deleteList() {
+    if (!await confirmBox('Delete this list?', `"${list.name}" will be deleted. People who are also in other lists stay there. Emails already sent are not affected.`, { ok: 'Delete list', danger: true })) return;
+    await api(`/lists/${list.id}`, { method: 'DELETE' }).then(() => { toast('List deleted.'); go('#/contacts/lists'); }).catch((err) => toast(err.message, 'error'));
+  }
+
   await load();
 }
+
+export const renderAll = (main) => contactsTable(main);
+export const renderList = (main, id) => contactsTable(main, { listId: id });
 
 export async function renderSuppressions(main) {
   const draw = async () => {

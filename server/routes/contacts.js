@@ -66,6 +66,74 @@ r.get('/contacts/search', async (req, res) => {
   res.json(rows);
 });
 
+// ---- Everyone in any list, one row per email address ----
+
+const CONTACT_SORTS = {
+  name: "lower(NULLIF(g.name, '')) %DIR% NULLS LAST, g.email",
+  email: 'g.email %DIR%',
+  company: `lower(NULLIF(COALESCE(g.data->>'Company', g.data->>'company', g.data->>'COMPANY', g.data->>'Organisation', g.data->>'Organization', ''), ''))
+            %DIR% NULLS LAST, g.email`,
+  added: 'g.created_at %DIR%, g.email',
+  last_sent: 'last_sent %DIR% NULLS LAST, g.email',
+};
+
+r.get('/contacts', async (req, res) => {
+  const { limit, offset } = paging(req.query, 50, 200);
+  const dir = req.query.dir === 'desc' ? 'DESC' : 'ASC';
+  const order = (CONTACT_SORTS[req.query.sort] || CONTACT_SORTS.name).replaceAll('%DIR%', dir);
+  const params = { q: likePattern(req.query.q), listId: positiveInt(req.query.list) || null, limit, offset };
+  const rows = await all(`
+    WITH g AS (
+      SELECT c.email,
+             (array_agg(c.name ORDER BY (c.name = ''), c.created_at DESC))[1] AS name,
+             (array_agg(c.data ORDER BY c.created_at DESC))[1] AS data,
+             jsonb_agg(DISTINCT jsonb_build_object('id', l.id, 'name', l.name)) AS lists,
+             MIN(c.created_at) AS created_at
+      FROM em_contacts c JOIN em_lists l ON l.id = c.list_id
+      WHERE CAST(:listId AS integer) IS NULL OR c.email IN (SELECT email FROM em_contacts WHERE list_id = :listId)
+      GROUP BY c.email
+    )
+    SELECT g.email, g.name, g.data, g.lists, g.created_at, (s.email IS NOT NULL) AS unsubscribed,
+           (SELECT MAX(x.sent_at) FROM em_recipients x WHERE x.email = g.email AND x.status = 'sent') AS last_sent,
+           (SELECT MAX(x.opened_at) FROM em_recipients x WHERE x.email = g.email) AS last_opened,
+           COUNT(*) OVER () AS total
+    FROM g LEFT JOIN em_suppressions s ON s.email = g.email
+    WHERE CAST(:q AS text) IS NULL OR g.email ILIKE :q ESCAPE '\\' OR g.name ILIKE :q ESCAPE '\\' OR g.data::text ILIKE :q ESCAPE '\\'
+    ORDER BY ${order}
+    LIMIT :limit OFFSET :offset`, params);
+  let total = rows[0]?.total ?? 0;
+  if (!rows.length && offset) {
+    // Page past the end (e.g. after deleting): still report the real total.
+    ({ total } = await get(`SELECT COUNT(DISTINCT email) AS total FROM em_contacts
+      WHERE CAST(:listId AS integer) IS NULL OR list_id = :listId`, params));
+  }
+  for (const x of rows) delete x.total;
+  res.json({ rows, total });
+});
+
+/** Updates name and details of one person in every list they are in. */
+r.post('/contacts/update', async (req, res) => {
+  const email = normalizeEmail(req.body?.email);
+  if (!email) throw badRequest('Enter a valid email address.');
+  const { valid } = normalizeContacts([{ email, name: req.body?.name, data: req.body?.data }]);
+  const { changes } = await run('UPDATE em_contacts SET name = :name, data = :data::jsonb WHERE email = :email', {
+    email, name: valid[0].name, data: JSON.stringify(valid[0].data),
+  });
+  if (!changes) throw notFound('Contact');
+  res.json({ ok: true });
+});
+
+/** Removes people from one list, or from every list when no list is given. */
+r.post('/contacts/delete', async (req, res) => {
+  const emails = (Array.isArray(req.body?.emails) ? req.body.emails : []).map(normalizeEmail).filter(Boolean);
+  if (!emails.length) throw badRequest('Select at least one contact.');
+  const { changes } = await run(`DELETE FROM em_contacts WHERE email = ANY(:emails)
+                                 AND (CAST(:listId AS integer) IS NULL OR list_id = :listId)`, {
+    emails, listId: positiveInt(req.body?.listId) || null,
+  });
+  res.json({ deleted: changes });
+});
+
 r.get('/lists', async (req, res) => {
   res.json(await all(`
     SELECT l.id, l.name, l.created_at, l.user_id, u.name AS owner_name,

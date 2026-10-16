@@ -1,16 +1,17 @@
 // Compose a single email (To / Cc / Bcc, rich text, attachments).
 import { go, setLeaveGuard } from './app.js';
 import {
-  $, api, busy, confirmBox, debounce, esc, fmtSize, html, icon, modal, mount, previewFrame, readBase64, store, toast,
+  $, api, avatar, busy, confirmBox, debounce, fmtSize, html, icon, modal, mount, popMenu, previewFrame, readBase64, store, toast,
 } from './common.js';
 import { createEditor } from './editor.js';
 import { state } from './state.js';
 
 const EMAIL_RE = /^[^\s@<>()[\]\\,;:"]+@[^\s@<>()[\]\\,;:"]+\.[^\s@<>()[\]\\,;:"]+$/;
 
-/** Address field with chips and contact suggestions. */
-export function chipInput(el, { value = [], placeholder = '', onChange = () => {} } = {}) {
+/** Address field with avatar chips and contact suggestions. Names picked from contacts are shown on the chips. */
+export function chipInput(el, { value = [], placeholder = '', names = {}, onChange = () => {} } = {}) {
   let items = [...value];
+  const known = new Map(Object.entries(names)); // email -> name
   el.className = 'chip-input';
   el.innerHTML = '<input type="text" autocomplete="off"><div class="suggest hidden"></div>';
   const input = el.querySelector('input');
@@ -22,18 +23,32 @@ export function chipInput(el, { value = [], placeholder = '', onChange = () => {
   const draw = () => {
     el.querySelectorAll('.chip').forEach((c) => c.remove());
     for (const [i, addr] of items.entries()) {
+      const ok = EMAIL_RE.test(addr);
+      const name = known.get(addr) || '';
       const c = document.createElement('span');
-      c.className = `chip${EMAIL_RE.test(addr) ? '' : ' bad'}`;
-      c.title = EMAIL_RE.test(addr) ? addr : `"${addr}" is not a valid email address`;
-      c.innerHTML = `<span class="ellipsis">${esc(addr)}</span><button type="button" aria-label="Remove ${esc(addr)}">×</button>`;
+      c.className = `chip${ok ? '' : ' bad'}`;
+      c.title = ok ? (name ? `${name} <${addr}>` : addr) : `"${addr}" is not a valid email address`;
+      mount(c, html`${avatar(name || addr, addr)}<span class="ellipsis">${name || addr}</span><button type="button" aria-label="Remove ${addr}">${icon('x')}</button>`);
       c.querySelector('button').onclick = (e) => { e.stopPropagation(); items.splice(i, 1); draw(); onChange(items); };
       el.insertBefore(c, input);
     }
     input.placeholder = items.length ? '' : placeholder;
   };
-  const add = (text) => {
-    const parts = String(text).split(/[,;\s]+/).map((p) => p.replace(/^.*<([^>]+)>.*$/, '$1').trim().toLowerCase()).filter(Boolean);
-    for (const p of parts) if (!items.includes(p)) items.push(p);
+  const add = (text, name = '') => {
+    // "Priya Sharma <priya@x.com>, ravi@x.com amit@x.com" -> three addresses, Priya's name kept.
+    const found = [];
+    for (const part of String(text).split(/[,;\n]+/)) {
+      const angle = part.match(/^(.*?)<([^>]+)>/);
+      if (angle) found.push([angle[2], angle[1].replace(/["']/g, '')]);
+      else for (const w of part.split(/\s+/)) found.push([w, '']);
+    }
+    for (const [a, n] of found) {
+      const addr = a.trim().toLowerCase();
+      if (!addr) continue;
+      const label = (name || n).trim();
+      if (label) known.set(addr, label);
+      if (!items.includes(addr)) items.push(addr);
+    }
     input.value = '';
     hide();
     draw();
@@ -42,7 +57,8 @@ export function chipInput(el, { value = [], placeholder = '', onChange = () => {
   const hide = () => { sug.classList.add('hidden'); options = []; sel = -1; };
   const showSug = () => {
     if (!options.length) return hide();
-    sug.innerHTML = options.map((o, i) => `<button type="button" data-i="${i}" class="${i === sel ? 'on' : ''}"><b>${esc(o.name || o.email)}</b>${o.name ? ` <span class="muted small">${esc(o.email)}</span>` : ''}</button>`).join('');
+    mount(sug, html`${options.map((o, i) => html`<button type="button" data-i="${i}" class="${i === sel ? 'on' : ''}">${avatar(o.name || o.email, o.email)}
+      <span class="grow"><b>${o.name || o.email}</b>${o.name ? html`<br><span class="muted small">${o.email}</span>` : ''}</span></button>`)}`);
     sug.classList.remove('hidden');
   };
   const search = debounce(async (q) => {
@@ -57,7 +73,7 @@ export function chipInput(el, { value = [], placeholder = '', onChange = () => {
   el.addEventListener('click', () => input.focus());
   sug.addEventListener('mousedown', (e) => {
     const b = e.target.closest('button');
-    if (b) { e.preventDefault(); add(options[Number(b.dataset.i)].email); }
+    if (b) { e.preventDefault(); const o = options[Number(b.dataset.i)]; add(o.email, o.name); }
   });
   input.addEventListener('input', () => {
     if (/[,;]/.test(input.value)) return add(input.value);
@@ -67,7 +83,7 @@ export function chipInput(el, { value = [], placeholder = '', onChange = () => {
     if (e.key === 'ArrowDown' && options.length) { e.preventDefault(); sel = (sel + 1) % options.length; showSug(); }
     else if (e.key === 'ArrowUp' && options.length) { e.preventDefault(); sel = (sel - 1 + options.length) % options.length; showSug(); }
     else if (e.key === 'Enter' || e.key === 'Tab') {
-      if (sel >= 0 && options[sel]) { e.preventDefault(); add(options[sel].email); }
+      if (sel >= 0 && options[sel]) { e.preventDefault(); add(options[sel].email, options[sel].name); }
       else if (input.value.trim()) { e.preventDefault(); add(input.value); }
     } else if (e.key === 'Backspace' && !input.value && items.length) { items.pop(); draw(); onChange(items); }
     else if (e.key === 'Escape') hide();
@@ -80,6 +96,7 @@ export function chipInput(el, { value = [], placeholder = '', onChange = () => {
   draw();
   return {
     get: () => { if (input.value.trim()) add(input.value); return [...items]; },
+    names: () => Object.fromEntries([...known].filter(([k]) => items.includes(k))),
     set: (v) => { items = [...v]; draw(); },
     invalid: () => items.filter((a) => !EMAIL_RE.test(a)),
     focus: () => input.focus(),
@@ -127,6 +144,7 @@ export function attachments(el, { kept = [], onChange = () => {} } = {}) {
   draw();
   return {
     addFiles,
+    pick,
     payload: () => files.map((f) => ({ filename: f.name, contentType: f.type, data: f.data })),
     keepIds: () => keep.map((k) => k.id),
     count: () => files.length + keep.length,
@@ -179,48 +197,55 @@ export async function render(main) {
   const start = handoff || draft || {};
   const startHtml = start.html ?? sigBlock(state.user.signature_html);
 
+  const wide = store.get('compose:wide', false);
   mount(main, html`
-    <div class="page-head"><div><h1>New email</h1><p>Send to one person or a small group. For personalised emails to many people use <a href="#/bulk">Bulk send</a>.</p></div>
-      <div class="actions"><button class="btn secondary" id="tpl-btn">${icon('template')} Use template</button></div></div>
     ${!state.app.smtpConfigured ? html`<div class="alert warn" style="margin-bottom:14px">${icon('alert')} Email sending is not set up yet, so sending will fail.</div>` : ''}
     ${draft ? html`<div class="alert info" style="margin-bottom:14px" id="draft-note">${icon('file')}<div class="grow">Your unsent draft was restored.</div><button class="btn sm secondary" id="discard-draft">Discard draft</button></div>` : ''}
-    <div class="compose">
-      <div class="card">
-        <div class="addr-row"><span>To</span><div id="to"></div>
-          <div class="row"><button class="btn sm ghost" id="show-cc" type="button">Cc</button><button class="btn sm ghost" id="show-bcc" type="button">Bcc</button></div></div>
-        <div class="addr-row hidden" id="cc-row"><span>Cc</span><div id="cc"></div><span></span></div>
-        <div class="addr-row hidden" id="bcc-row"><span>Bcc</span><div id="bcc"></div><span></span></div>
-        <input class="subject-input" id="subject" placeholder="Subject" maxlength="300" value="${start.subject || ''}">
-        <div style="margin-top:14px" id="editor"></div>
-        <div style="margin-top:14px" id="attach"></div>
-        <div class="sticky-actions">
-          <div class="row wrap">
-            <button class="btn lg" id="send-btn" data-busy="Sending…">${icon('send')} Send</button>
-            <button class="btn secondary" id="preview-btn">${icon('eye')} Preview</button>
-          </div>
-          <div class="row wrap">
-            <button class="btn ghost" id="save-tpl">Save as template</button>
-            <button class="btn ghost" id="clear-btn">${icon('trash')} Clear</button>
+    <section class="mail-window ${wide ? 'wide' : ''}" aria-label="New message">
+      <header class="mw-head"><b>New Message</b>
+        <div class="row" style="gap:2px">
+          <a class="mw-head-btn" href="#/bulk" title="Personalised email to many people">${icon('bulk')}<span>Bulk send</span></a>
+          <button class="mw-head-btn" id="mw-wide" type="button" title="${wide ? 'Smaller window' : 'Bigger window'}">${icon(wide ? 'shrink' : 'expand')}</button>
+          <a class="mw-head-btn" href="#/" title="Close (your draft is kept)">${icon('x')}</a>
+        </div></header>
+      <div class="mw-body">
+        <div class="mw-row"><span class="mw-label">To</span><div id="to" class="grow"></div>
+          <div class="mw-links"><button type="button" id="show-cc">Cc</button><button type="button" id="show-bcc">Bcc</button></div></div>
+        <div class="mw-row hidden" id="cc-row"><span class="mw-label">Cc</span><div id="cc" class="grow"></div></div>
+        <div class="mw-row hidden" id="bcc-row"><span class="mw-label">Bcc</span><div id="bcc" class="grow"></div></div>
+        <input class="mw-subject" id="subject" placeholder="Subject" maxlength="300" value="${start.subject || ''}" aria-label="Subject">
+        <div id="editor" class="mw-editor"></div>
+        <div id="attach" class="mw-attach"></div>
+        <div class="mw-options hidden" id="mw-options">
+          <div class="form-grid">
+            <label class="field">From name<input id="from-name" placeholder="${state.app.fromName || state.user.name}" value="${start.fromName || ''}" maxlength="100">
+              <span class="hint">Sent from <b>${state.app.fromEmail || '(not set)'}</b></span></label>
+            <label class="field">Replies go to<input id="reply-to" type="email" placeholder="${state.user.email}" value="${start.replyTo ?? state.user.email}">
+              <span class="hint">Where answers will arrive</span></label>
           </div>
         </div>
       </div>
-      <div class="stack">
-        <div class="card stack">
-          <div class="section-title">Sender</div>
-          <label class="field">From name<input id="from-name" placeholder="${state.app.fromName || state.user.name}" value="${start.fromName || ''}" maxlength="100">
-            <span class="hint">Sent from <b>${state.app.fromEmail || '(not set)'}</b>. Leave empty to use the default name.</span></label>
-          <label class="field">Replies go to<input id="reply-to" type="email" placeholder="${state.user.email}" value="${start.replyTo ?? state.user.email}">
-            <span class="hint">Where answers to this email will arrive.</span></label>
-          <label class="check"><input type="checkbox" id="track-opens" ${start.trackOpens === false ? '' : 'checked'}><span>Track opens<br><span class="hint">See when it was opened in <b>Sent &amp; reports</b>.</span></span></label>
+      <footer class="mw-foot">
+        <div class="send-split">
+          <button class="btn send-main" id="send-btn" data-busy="Sending…">Send</button>
+          <button class="btn send-more" id="send-more" type="button" aria-label="More send options" title="More send options">${icon('down')}</button>
         </div>
-        <div class="card stack small">
-          <div class="section-title">Tips</div>
-          <p>Type a name or email in <b>To</b> to pick from your contacts. Press <b>Enter</b> or <b>comma</b> after each address.</p>
-          <p>Drop files anywhere on this page to attach them (up to ${fmtSize(state.app.maxAttachmentBytes)}).</p>
-          <p>Your signature is added automatically. Change it in <a href="#/profile">My profile</a>.</p>
+        <div class="mw-tools">
+          <button type="button" class="icon-btn on" id="fmt-btn" title="Formatting options">${icon('type')}</button>
+          <button type="button" class="icon-btn" id="att-btn" title="Attach files (or drop them here)">${icon('clip')}</button>
+          <button type="button" class="icon-btn" id="link-btn" title="Insert link">${icon('link')}</button>
+          <button type="button" class="icon-btn" id="img-btn" title="Insert image">${icon('image')}</button>
+          <button type="button" class="icon-btn" id="tpl-btn" title="Use a template">${icon('template')}</button>
+          <button type="button" class="icon-btn" id="preview-btn" title="Preview">${icon('eye')}</button>
+          <label class="track-toggle" title="See when it is opened, in Sent &amp; reports"><input type="checkbox" id="track-opens" ${start.trackOpens === false ? '' : 'checked'}>${icon('eye')}<span>Track opens</span></label>
         </div>
-      </div>
-    </div>`);
+        <div class="row" style="gap:2px;margin-left:auto">
+          <button type="button" class="icon-btn" id="opts-btn" title="Sender options">${icon('dotsV')}</button>
+          <button type="button" class="icon-btn" id="clear-btn" title="Discard">${icon('trash')}</button>
+        </div>
+      </footer>
+    </section>
+    <p class="tiny muted mw-hint">Type a name or email in <b>To</b> to pick from your contacts · Drop files anywhere to attach (up to ${fmtSize(state.app.maxAttachmentBytes)}) · Your signature is added from <a href="#/profile">My profile</a></p>`);
 
   let dirty = false;
   const subjectEl = $('#subject');
@@ -230,23 +255,57 @@ export async function render(main) {
     if (!dirty) return;
     store.set(`draft:${state.user.id}`, {
       to: to.get(), cc: cc.get(), bcc: bcc.get(), subject: subjectEl.value, html: editor.getHTML(),
-      fromName: fromEl.value, replyTo: replyEl.value,
+      fromName: fromEl.value, replyTo: replyEl.value, names: { ...to.names(), ...cc.names(), ...bcc.names() },
+      trackOpens: $('#track-opens').checked,
     });
   };
   const saveDraft = debounce(writeDraft, 800);
   const touch = () => { dirty = true; saveDraft(); };
 
-  const to = chipInput($('#to'), { value: start.to || [], placeholder: 'Recipients', onChange: touch });
-  const cc = chipInput($('#cc'), { value: start.cc || [], onChange: touch });
-  const bcc = chipInput($('#bcc'), { value: start.bcc || [], onChange: touch });
-  if (start.cc?.length) $('#cc-row').classList.remove('hidden');
-  if (start.bcc?.length) $('#bcc-row').classList.remove('hidden');
-  $('#show-cc').onclick = () => { $('#cc-row').classList.remove('hidden'); cc.focus(); };
-  $('#show-bcc').onclick = () => { $('#bcc-row').classList.remove('hidden'); bcc.focus(); };
+  const names = start.names || {};
+  const to = chipInput($('#to'), { value: start.to || [], names, placeholder: 'Recipients', onChange: touch });
+  const cc = chipInput($('#cc'), { value: start.cc || [], names, onChange: touch });
+  const bcc = chipInput($('#bcc'), { value: start.bcc || [], names, onChange: touch });
+  const showRow = (row, input, btn) => { $(row).classList.remove('hidden'); $(btn).classList.add('hidden'); input.focus(); };
+  if (start.cc?.length) { $('#cc-row').classList.remove('hidden'); $('#show-cc').classList.add('hidden'); }
+  if (start.bcc?.length) { $('#bcc-row').classList.remove('hidden'); $('#show-bcc').classList.add('hidden'); }
+  $('#show-cc').onclick = () => showRow('#cc-row', cc, '#show-cc');
+  $('#show-bcc').onclick = () => showRow('#bcc-row', bcc, '#show-bcc');
   const editor = createEditor($('#editor'), { value: startHtml, onChange: touch });
   const att = attachments($('#attach'), { kept: start.keepAttachments || [], onChange: () => { dirty = true; } });
   ['#subject', '#from-name', '#reply-to'].forEach((s) => $(s).addEventListener('input', touch));
+  $('#track-opens').addEventListener('change', touch);
   if (!(start.to || []).length) to.focus();
+
+  // Footer tools (Gmail style)
+  const win = $('.mail-window');
+  const showTools = store.get('compose:tools', true);
+  win.classList.toggle('no-tools', !showTools);
+  $('#fmt-btn').classList.toggle('on', showTools);
+  $('#fmt-btn').onclick = () => {
+    const on = win.classList.toggle('no-tools') === false;
+    $('#fmt-btn').classList.toggle('on', on);
+    store.set('compose:tools', on);
+  };
+  $('#att-btn').onclick = () => att.pick();
+  $('#link-btn').onclick = () => editor.root.querySelector('[data-cmd="link"]').click();
+  $('#img-btn').onclick = () => editor.root.querySelector('[data-cmd="image"]').click();
+  $('#opts-btn').onclick = () => {
+    const open = $('#mw-options').classList.toggle('hidden') === false;
+    $('#opts-btn').classList.toggle('on', open);
+    if (open) $('#from-name').focus();
+  };
+  $('#mw-wide').onclick = () => {
+    const on = win.classList.toggle('wide');
+    store.set('compose:wide', on);
+    mount($('#mw-wide'), icon(on ? 'shrink' : 'expand'));
+    $('#mw-wide').title = on ? 'Smaller window' : 'Bigger window';
+  };
+  $('#send-more').onclick = (e) => popMenu(e.currentTarget, [
+    { label: 'Preview', icon: 'eye', onClick: () => $('#preview-btn').click() },
+    { label: 'Save as template', icon: 'template', onClick: () => saveAsTemplate($('#subject').value, editor.getHTML()).catch((err) => toast(err.message, 'error')) },
+    { label: 'Send to many people instead (Bulk send)', icon: 'bulk', onClick: () => go('#/bulk') },
+  ]);
 
   $('#discard-draft')?.addEventListener('click', () => {
     store.del(`draft:${state.user.id}`);
@@ -276,8 +335,6 @@ export async function render(main) {
     editor.setHTML(t.html + sigBlock(state.user.signature_html));
     if (/\{\{/.test(t.html + t.subject)) toast('This template has {{fields}}. They are only filled in for Bulk send.');
   };
-
-  $('#save-tpl').onclick = (e) => busy(e.currentTarget, () => saveAsTemplate($('#subject').value, editor.getHTML()));
 
   $('#clear-btn').onclick = async () => {
     if (!await confirmBox('Clear this email?', 'Recipients, subject, message and attachments will be removed.', { ok: 'Clear', danger: true })) return;
