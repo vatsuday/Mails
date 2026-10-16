@@ -67,6 +67,67 @@ async function parseXlsx(buf) {
   return rows;
 }
 
+const TEMPLATE_COLUMNS = [
+  ['Email', 32, 'Required. One address per row.'],
+  ['Name', 24, 'Full name. {{first_name}} is taken from it automatically.'],
+  ['Company', 24, 'Use in emails as {{company}}'],
+  ['Designation', 20, '{{designation}}'],
+  ['City', 16, '{{city}}'],
+  ['Phone', 16, '{{phone}}'],
+];
+
+/**
+ * Excel file to fill in for a bulk send / contact import. The first sheet is read on upload, so it only has
+ * the column titles; examples and instructions are on a second sheet and can never be emailed by mistake.
+ * `extra` adds columns (e.g. fields used in the current message such as invoice_no).
+ */
+export async function buildTemplateXlsx(extra = []) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Company Mail';
+  const cols = [...TEMPLATE_COLUMNS];
+  for (const e of extra) {
+    const title = String(e).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).slice(0, 40);
+    if (title && !cols.some(([c]) => c.toLowerCase() === title.toLowerCase())) cols.push([title, 18, `{{${e}}}`]);
+  }
+
+  const ws = wb.addWorksheet('Recipients', { views: [{ state: 'frozen', ySplit: 1 }] });
+  ws.columns = cols.map(([header, width]) => ({ header, width }));
+  const head = ws.getRow(1);
+  head.height = 22;
+  head.eachCell((cell, i) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: i === 1 ? 'FF4F46E5' : 'FF6D74F7' } };
+    cell.alignment = { vertical: 'middle' };
+    cell.note = cols[i - 1][2];
+  });
+  ws.dataValidations.add('A2:A20001', {
+    type: 'custom', allowBlank: true, formulae: ['ISNUMBER(SEARCH("@",A2))'],
+    showErrorMessage: true, errorStyle: 'warning', errorTitle: 'Email address', error: 'This does not look like an email address.',
+  });
+
+  const help = wb.addWorksheet('How to fill');
+  help.columns = [{ width: 4 }, { width: 110 }];
+  const lines = [
+    ['How to use this file'],
+    [''],
+    ['1', 'Fill in the "Recipients" sheet: one person per row. Only the Email column is required.'],
+    ['2', 'Keep the first row (the column titles). You can delete columns you do not need or add your own, e.g. "Amount".'],
+    ['3', 'In the email, every column can be used as a field: Company -> {{company}}, Due date -> {{due_date}}, Name -> {{name}} and {{first_name}}.'],
+    ['4', 'Add a fallback for empty cells like this: {{first_name|there}} gives "Hi there" when the name is missing.'],
+    ['5', 'Save the file (.xlsx) and upload it under Bulk send -> Upload Excel / CSV, or under Contacts -> Import.'],
+    [''],
+    ['', 'Example rows (do not fill this sheet; it is not read when uploading):'],
+  ];
+  for (const l of lines) help.addRow(l);
+  help.getRow(1).font = { bold: true, size: 14, color: { argb: 'FF4F46E5' } };
+  help.getRow(lines.length).font = { italic: true, color: { argb: 'FF6B7088' } };
+  const ex = help.addRow(['', cols.map(([c]) => c).join('  |  ')]);
+  ex.font = { bold: true };
+  help.addRow(['', ['priya.sharma@example.com', 'Priya Sharma', 'Acme Pvt Ltd', 'Manager', 'Pune', '+91 98xxxxxx01'].join('  |  ')]);
+  help.addRow(['', ['ravi@example.com', 'Ravi Kumar', 'Globex', 'Director', 'Mumbai', ''].join('  |  ')]);
+  return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
 /** Returns { columns, rows } where rows are objects keyed by column name. */
 export async function parseContactFile(filename, base64) {
   const buf = Buffer.from(String(base64 || ''), 'base64');

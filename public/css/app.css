@@ -496,3 +496,8 @@ table.data.contacts td.cb input, table.data.contacts th.cb input { vertical-alig
 .tpl-card.on .tpl-thumb::after { content: "✓"; position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--primary-grad); color: #fff; font-size: .8rem; font-weight: 800; }
 .tpl-meta { display: flex; flex-direction: column; gap: 1px; padding: 9px 11px 10px; min-width: 0; }
 .tpl-meta b { font-size: .88rem; }
+
+/* Excel template download (bulk send) */
+.xl-help { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding: 14px 16px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--ok) 25%, var(--border)); background: linear-gradient(135deg, color-mix(in srgb, var(--ok-soft) 70%, var(--surface)), var(--surface) 80%); flex-wrap: wrap; }
+.xl-icon { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: #1d6f42; color: #fff; flex: none; box-shadow: 0 4px 12px rgba(29, 111, 66, .3); }
+.xl-help .btn { border-color: color-mix(in srgb, var(--ok) 35%, var(--border)); }

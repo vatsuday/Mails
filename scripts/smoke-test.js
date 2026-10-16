@@ -47,13 +47,14 @@ function check(name, ok, extra = '') {
 
 function client() {
   let cookie = '';
-  return async (method, p, body, { csrf = true } = {}) => {
+  return async (method, p, body, { csrf = true, raw = false } = {}) => {
     const headers = { Cookie: cookie };
     if (csrf) headers['X-Requested-With'] = 'CM';
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const res = await fetch(`${B}${p}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const set = res.headers.getSetCookie();
     if (set.length) cookie = set.map((c) => c.split(';')[0]).join('; ');
+    if (raw) return res;
     const type = res.headers.get('content-type') || '';
     const data = type.includes('json') ? await res.json() : await res.text();
     return { status: res.status, data };
@@ -108,6 +109,22 @@ try {
   const csv = 'Email,Name,Company\nravi@client.com,Ravi Kumar,Acme\npriya@client.com,Priya Shah,\nbad-address,No One,X\nbounce@client.com,Bounce Test,Fail Inc\nRAVI@client.com,Dup,Acme\n';
   r = await admin('POST', '/api/contacts/parse', { filename: 'people.csv', data: Buffer.from(csv).toString('base64') });
   check('CSV parsed', r.status === 200 && r.data.columns.join() === 'Email,Name,Company' && r.data.rows.length === 5);
+
+  // Excel template: download, fill one row like a user would, upload again
+  {
+    const res = await admin('GET', '/api/contacts/template.xlsx?fields=invoice_no,due_date', undefined, { raw: true });
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const buf = Buffer.from(await res.arrayBuffer());
+    await wb.xlsx.load(buf);
+    const ws = wb.worksheets[0];
+    const headers = ws.getRow(1).values.slice(1);
+    check('Excel template downloads with extra fields', res.status === 200 && ws.name === 'Recipients' && headers.includes('Invoice No') && headers.includes('Due Date') && wb.worksheets.length === 2, headers.join());
+    ws.addRow(['filled@client.com', 'Filled Person', 'Acme', '', '', '', 'INV-7', '31 Oct']);
+    const filled = Buffer.from(await wb.xlsx.writeBuffer()).toString('base64');
+    const tr = await admin('POST', '/api/contacts/parse', { filename: 'bulk-email-template.xlsx', data: filled });
+    check('filled template reads back (examples sheet ignored)', tr.status === 200 && tr.data.rows.length === 1 && tr.data.rows[0].Email === 'filled@client.com' && tr.data.rows[0]['Invoice No'] === 'INV-7', JSON.stringify(tr.data));
+  }
   const contacts = r.data.rows.map((x) => ({ email: x.Email, name: x.Name, data: { Company: x.Company } }));
 
   // Contact list

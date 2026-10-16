@@ -199,11 +199,22 @@ export async function render(main) {
     if (s.tab === 'paste') drawPasteTab(tb);
   }
 
+  /** Excel template link; also adds columns for fields the message already uses (e.g. from a template). */
+  function templateUrl() {
+    const fields = variablesUsed(s.subject, s.html).filter((v) => !['email', 'name', 'first_name', 'unsubscribe_url'].includes(v));
+    return `/api/contacts/template.xlsx${fields.length ? `?fields=${encodeURIComponent(fields.join(','))}` : ''}`;
+  }
+
   function drawFileTab(tb) {
     if (!s.file) {
       mount(tb, html`
         <div class="dropzone" id="dz">${icon('upload', 'icon')}<p style="margin-top:8px"><b>Drop your Excel or CSV file here</b> or click to choose</p>
           <p class="small" style="margin-top:4px">First row = column titles, e.g. <b>Email</b>, <b>Name</b>, Company, City… Every column can be used in the message as {{column}}.</p></div>
+        <div class="xl-help">
+          <span class="xl-icon">${icon('file')}</span>
+          <div class="grow"><b>Don't have a file yet?</b><div class="small muted">Download the Excel template, fill in one person per row, save it and upload it here.</div></div>
+          <a class="btn secondary" id="xl-template" href="${templateUrl()}" download>${icon('download')} Download Excel template</a>
+        </div>
         <p class="tiny muted" style="margin-top:10px">Supported: .xlsx, .csv (up to ${fmtNum(state.app.maxRecipients)} rows).</p>`);
       dropzone($('#dz'), async (files) => {
         const f = files[0];

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireAdmin } from '../auth.js';
 import { all, get, run, tx } from '../db.js';
-import { parseContactFile } from '../importer.js';
+import { buildTemplateXlsx, parseContactFile } from '../importer.js';
 import { badRequest, csvCell, likePattern, normalizeEmail, notFound, paging, positiveInt, str } from '../util.js';
 
 const r = Router();
@@ -51,6 +51,18 @@ async function loadList(req) {
   if (!list) throw notFound('Contact list');
   return list;
 }
+
+r.get('/contacts/template.xlsx', async (req, res) => {
+  const reserved = new Set(['email', 'name', 'first_name', 'unsubscribe_url', 'company', 'designation', 'city', 'phone']);
+  const extra = String(req.query.fields || '').split(',').map((f) => f.trim().toLowerCase().replace(/[^a-z0-9_]/g, ''))
+    .filter((f) => f && !reserved.has(f)).slice(0, 20);
+  const buf = await buildTemplateXlsx(extra);
+  res.set({
+    'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition': 'attachment; filename="bulk-email-template.xlsx"',
+  });
+  res.send(buf);
+});
 
 r.post('/contacts/parse', async (req, res) => {
   res.json(await parseContactFile(str(req.body?.filename, 200), req.body?.data));

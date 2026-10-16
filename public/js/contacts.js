@@ -39,7 +39,8 @@ export function importContacts({ askName = false, title = 'Import contacts' } = 
       const body = $('#imp-body', box);
       if (mode === 'file') {
         if (!parsed) {
-          mount(body, html`<div class="dropzone" id="imp-dz">${icon('upload')}<p><b>Drop an Excel or CSV file</b> or click to choose</p><p class="tiny">First row should contain the column titles (Email, Name, …).</p></div>`);
+          mount(body, html`<div class="dropzone" id="imp-dz">${icon('upload')}<p><b>Drop an Excel or CSV file</b> or click to choose</p><p class="tiny">First row should contain the column titles (Email, Name, …).</p></div>
+            <p class="small muted" style="margin-top:10px">No file yet? <a href="/api/contacts/template.xlsx" download>${icon('download')} Download the Excel template</a>, fill it in and upload it here.</p>`);
           dropzone($('#imp-dz', box), async (files) => {
             const f = files[0];
             $('#imp-dz', box).innerHTML = '<span class="spinner"></span>';
