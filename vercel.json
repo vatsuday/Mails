@@ -25,9 +25,9 @@
         { "key": "Content-Security-Policy", "value": "default-src 'self'; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'" }
       ]
     },
-    {
-      "source": "/(|index.html|js/(.*)|css/(.*))",
-      "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
-    }
+    { "source": "/", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+    { "source": "/index.html", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+    { "source": "/js/(.*)", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] },
+    { "source": "/css/(.*)", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
   ]
 }
