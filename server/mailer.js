@@ -3,7 +3,7 @@ import nodemailer from 'nodemailer';
 import { buildVars, merge } from '../public/js/merge.js';
 import { config } from './config.js';
 import { get, run } from './db.js';
-import { decrypt, encrypt, unsubscribeToken } from './secret.js';
+import { decrypt, encrypt, openToken, unsubscribeToken } from './secret.js';
 import { HttpError, escapeHtml, htmlToText } from './util.js';
 
 export const SMTP_DEFAULTS = {
@@ -81,6 +81,12 @@ export function wrapHtml(body) {
     + `<body style="margin:0;padding:16px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:#1f2937">${body}</body></html>`;
 }
 
+/** Invisible 1×1 image; loading it tells us the email was opened (when the reader's app shows images). */
+export function trackingPixel(msg, recipientId) {
+  if (!msg.track_opens || !msg.base_url || !recipientId) return '';
+  return `<img src="${escapeHtml(`${msg.base_url}/u/o/${openToken(recipientId)}.gif`)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;opacity:0">`;
+}
+
 export const toNodemailerAttachments = (rows) => rows.map((a) => ({
   filename: a.filename,
   contentType: a.content_type,
@@ -104,7 +110,7 @@ export function buildBulkMail(msg, recipient, s, attachments) {
     from: fromHeader(s, msg.from_name),
     to: recipient.name ? { name: recipient.name, address: recipient.email } : recipient.email,
     subject: merge(msg.subject, vars),
-    html: wrapHtml(body),
+    html: wrapHtml(body + trackingPixel(msg, recipient.id)),
     text: htmlToText(body),
     attachments,
   };

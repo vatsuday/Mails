@@ -9,6 +9,15 @@ import { isAdmin, state } from './state.js';
 
 const hashParams = () => new URLSearchParams(location.hash.split('?')[1] || '');
 
+const pctOf = (n, of) => (Number(of) ? `${Math.round((100 * Number(n)) / Number(of))}%` : '0%');
+
+function openCell(m) {
+  if (!m.track_opens || !Number(m.sent)) return html`<span class="tiny muted">—</span>`;
+  if (m.kind === 'single') return Number(m.opened) ? html`<span class="badge ok">${icon('eye')} Opened</span>` : html`<span class="tiny muted">Not yet</span>`;
+  const pct = Math.round((100 * Number(m.opened)) / Number(m.sent));
+  return html`<div class="open-rate" title="${fmtNum(m.opened)} of ${fmtNum(m.sent)} opened"><b>${pct}%</b><span class="ring" style="--p:${pct}"></span></div>`;
+}
+
 export async function renderList(main) {
   const p = hashParams();
   const f = { q: p.get('q') || '', kind: p.get('kind') || '', status: p.get('status') || '', scope: p.get('scope') || '', page: Number(p.get('page')) || 1 };
@@ -37,7 +46,7 @@ export async function renderList(main) {
     }
     mount(box, html`
       <div class="table-wrap"><table class="data">
-        <thead><tr><th>Date</th><th>Subject</th><th>To</th><th>Status</th>${isAdmin() ? html`<th>Sent by</th>` : ''}</tr></thead>
+        <thead><tr><th>Date</th><th>Subject</th><th>To</th><th>Status</th><th>Opened</th>${isAdmin() ? html`<th>Sent by</th>` : ''}</tr></thead>
         <tbody>${d.rows.map((m) => html`<tr class="clickable" data-id="${m.id}">
           <td class="nowrap small" title="${fmtDateTime(m.created_at)}">${timeAgo(m.created_at)}</td>
           <td class="subject"><div class="row"><span class="ellipsis"><b>${m.subject || '(no subject)'}</b></span>${m.attachments ? icon('clip') : ''}</div>
@@ -45,6 +54,7 @@ export async function renderList(main) {
           <td class="small">${m.kind === 'bulk' ? html`<b>${fmtNum(m.total)}</b> people` : html`<span class="ellipsis" style="display:block;max-width:240px">${m.first_email}</span>`}</td>
           <td>${m.kind === 'bulk' && m.total ? html`<div class="stack tight">${statusBadge(m.status)}${progressBar(m, 'mini-progress')}
             <span class="tiny muted">${fmtNum(m.sent)} sent${m.failed ? html` · <span style="color:var(--danger)">${fmtNum(m.failed)} failed</span>` : ''}</span></div>` : statusBadge(m.status)}</td>
+          <td>${openCell(m)}</td>
           ${isAdmin() ? html`<td class="small nowrap">${m.user_name || '—'}</td>` : ''}
         </tr>`)}</tbody></table></div>
       <div class="pager"><span>${fmtNum(d.total)} emails</span>
@@ -98,7 +108,12 @@ export async function renderDetail(main, id) {
         ${m.kind === 'bulk' ? html`<div class="card stack" id="progress-card"></div>` : html`
           <div class="alert ${m.status === 'failed' ? 'error' : m.status === 'done' ? 'ok' : 'info'}">${icon(m.status === 'failed' ? 'alert' : 'check')}
             <div>${m.status === 'done' ? html`<b>Sent</b> to ${m.to}` : m.status === 'failed' ? html`<b>Not sent.</b> ${m.error || ''}` : 'Sending…'}
-            ${m.status === 'done' && m.error ? html`<br>${m.error}` : ''}</div></div>`}
+            ${m.status === 'done' && m.error ? html`<br>${m.error}` : ''}</div></div>
+          ${m.status === 'done' && m.track_opens ? html`<div class="card open-card ${m.opened_at ? 'is-open' : ''}">
+            <span class="open-icon">${icon(m.opened_at ? 'eye' : 'clock')}</span>
+            <div>${m.opened_at ? html`<b>Opened ${fmtNum(m.open_count)} ${Number(m.open_count) === 1 ? 'time' : 'times'}</b>
+              <div class="small muted">First opened ${fmtDateTime(m.opened_at)}${m.open_count > 1 ? html` · last ${timeAgo(m.last_opened_at)}` : ''}</div>`
+              : html`<b>Not opened yet</b><div class="small muted">We'll show it here when the email is opened.</div>`}</div></div>` : ''}`}
         <div class="grid-2" style="grid-template-columns:minmax(0,2fr) minmax(260px,1fr)">
           <div class="card"><div class="card-title"><h2>Message</h2>${m.kind === 'bulk' ? html`<span class="tiny muted">{{fields}} are filled in per person</span>` : ''}</div><div id="msg-preview"></div></div>
           <div class="card"><dl class="kv">
@@ -106,6 +121,7 @@ export async function renderDetail(main, id) {
             ${m.kind === 'single' ? html`<dt>To</dt><dd>${m.to}</dd>${m.cc ? html`<dt>Cc</dt><dd>${m.cc}</dd>` : ''}${m.bcc ? html`<dt>Bcc</dt><dd>${m.bcc}</dd>` : ''}` : html`<dt>Recipients</dt><dd>${fmtNum(m.total)}</dd><dt>Source</dt><dd>${m.source || '—'}</dd>`}
             ${m.reply_to ? html`<dt>Replies to</dt><dd>${m.reply_to}</dd>` : ''}
             ${m.kind === 'bulk' ? html`<dt>Unsubscribe link</dt><dd>${m.add_unsubscribe ? 'Yes' : 'No'}</dd>` : ''}
+            <dt>Track opens</dt><dd>${m.track_opens ? 'Yes' : 'No'}</dd>
             <dt>Created</dt><dd>${fmtDateTime(m.created_at)}</dd>
             ${m.finished_at ? html`<dt>Finished</dt><dd>${fmtDateTime(m.finished_at)}</dd>` : ''}
             ${m.attachments.length ? html`<dt>Attachments</dt><dd class="stack tight">${m.attachments.map((a) => html`<a href="/api/messages/${m.id}/attachments/${a.id}" download>${icon('clip')} ${a.filename} <span class="tiny muted">${fmtSize(a.size)}</span></a>`)}</dd>` : ''}
@@ -122,12 +138,12 @@ export async function renderDetail(main, id) {
     $('#again').onclick = () => {
       const keep = m.attachments.map((a) => ({ id: a.id, filename: a.filename, size: a.size }));
       if (m.kind === 'bulk') {
-        state.handoff = { mode: 'bulk', subject: m.subject, html: m.html, fromName: m.from_name, replyTo: m.reply_to, addUnsubscribe: m.add_unsubscribe, keepAttachments: keep, fromMessageId: m.id };
+        state.handoff = { mode: 'bulk', subject: m.subject, html: m.html, fromName: m.from_name, replyTo: m.reply_to, addUnsubscribe: m.add_unsubscribe, trackOpens: m.track_opens, keepAttachments: keep, fromMessageId: m.id };
         go('#/bulk');
       } else {
         state.handoff = {
           mode: 'compose', to: m.to.split(/,\s*/).filter(Boolean), cc: m.cc ? m.cc.split(/,\s*/) : [], bcc: m.bcc ? m.bcc.split(/,\s*/) : [],
-          subject: m.subject, html: m.html, fromName: m.from_name, replyTo: m.reply_to, keepAttachments: keep, fromMessageId: m.id,
+          subject: m.subject, html: m.html, fromName: m.from_name, replyTo: m.reply_to, trackOpens: m.track_opens, keepAttachments: keep, fromMessageId: m.id,
         };
         go('#/compose');
       }
@@ -160,6 +176,8 @@ export async function renderDetail(main, id) {
         <div class="stat"><div class="label">Failed</div><div class="value" style="color:${m.failed ? 'var(--danger)' : 'inherit'}">${fmtNum(m.failed)}</div></div>
         <div class="stat"><div class="label">Skipped</div><div class="value">${fmtNum(m.skipped)}</div><div class="sub">unsubscribed / cancelled</div></div>
         <div class="stat"><div class="label">Waiting</div><div class="value">${fmtNum(m.pending)}</div></div>
+        ${m.track_opens ? html`<div class="stat stat-open"><div class="label">Opened</div><div class="value">${fmtNum(m.opened)}</div>
+          <div class="sub">${pctOf(m.opened, m.sent)} of delivered</div></div>` : ''}
       </div>
       ${job?.notice ? html`<div class="alert warn">${icon('alert')}<div>${job.notice}</div></div>` : ''}
       ${job?.error ? html`<div class="alert error">${icon('alert')}<div>${job.error}</div></div>` : ''}
@@ -170,7 +188,9 @@ export async function renderDetail(main, id) {
   };
 
   const drawRecipientTabs = () => {
-    const tabs = [['', 'All', m.total], ['sent', 'Sent', m.sent], ['failed', 'Failed', m.failed], ['pending', 'Waiting', m.pending], ['skipped', 'Skipped', m.skipped]];
+    const tabs = [['', 'All', m.total], ['sent', 'Sent', m.sent]];
+    if (m.track_opens) tabs.push(['opened', 'Opened', m.opened], ['unopened', 'Not opened', Math.max(0, m.sent - m.opened)]);
+    tabs.push(['failed', 'Failed', m.failed], ['pending', 'Waiting', m.pending], ['skipped', 'Skipped', m.skipped]);
     mount($('#r-tabs'), html`${tabs.map(([v, l, n]) => html`<button data-s="${v}" class="${rf.status === v ? 'on' : ''}">${l} <span class="badge">${fmtNum(n)}</span></button>`)}`);
     $$('[data-s]', $('#r-tabs')).forEach((b) => { b.onclick = () => { rf.status = b.dataset.s; rf.page = 1; drawRecipientTabs(); loadRecipients(); }; });
   };
@@ -179,13 +199,15 @@ export async function renderDetail(main, id) {
     const box = $('#r-table');
     if (!box) return;
     const limit = 50;
-    const d = await api(`/messages/${m.id}/recipients${qs({ status: rf.status, q: rf.q, page: rf.page, limit })}`);
+    const filter = rf.status === 'opened' ? { status: 'sent', opened: 'yes' } : rf.status === 'unopened' ? { status: 'sent', opened: 'no' } : { status: rf.status };
+    const d = await api(`/messages/${m.id}/recipients${qs({ ...filter, q: rf.q, page: rf.page, limit })}`);
     const pages = Math.max(1, Math.ceil(d.total / limit));
     if (!d.rows.length) { mount(box, html`<div class="empty small">No recipients here.</div>`); return; }
     mount(box, html`<div class="table-wrap"><table class="data">
-      <thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Sent at</th><th>Details</th></tr></thead>
+      <thead><tr><th>Email</th><th>Name</th><th>Status</th><th>Sent at</th>${m.track_opens ? html`<th>Opened</th>` : ''}<th>Details</th></tr></thead>
       <tbody>${d.rows.map((r) => html`<tr><td>${r.email}</td><td>${r.name}</td><td>${statusBadge(r.status)}</td>
-        <td class="small nowrap">${r.sent_at ? fmtDateTime(r.sent_at) : ''}</td><td class="small" style="color:${r.status === 'failed' ? 'var(--danger)' : 'var(--muted)'}">${r.error || ''}</td></tr>`)}</tbody></table></div>
+        <td class="small nowrap">${r.sent_at ? fmtDateTime(r.sent_at) : ''}</td>
+        ${m.track_opens ? html`<td class="small nowrap">${r.opened_at ? html`<span class="badge ok" title="First opened ${fmtDateTime(r.opened_at)}">${icon('eye')} ${r.open_count > 1 ? `${fmtNum(r.open_count)}×` : 'Opened'}</span> <span class="tiny muted">${timeAgo(r.opened_at)}</span>` : r.status === 'sent' ? html`<span class="tiny muted">Not yet</span>` : ''}</td>` : ''}<td class="small" style="color:${r.status === 'failed' ? 'var(--danger)' : 'var(--muted)'}">${r.error || ''}</td></tr>`)}</tbody></table></div>
       <div class="pager"><span>${fmtNum(d.total)} people</span><div class="row">
         <button class="btn sm secondary" id="rp-prev" ${rf.page <= 1 ? 'disabled' : ''}>${icon('left')}</button><span>Page ${rf.page} of ${pages}</span>
         <button class="btn sm secondary" id="rp-next" ${rf.page >= pages ? 'disabled' : ''}>${icon('right')}</button></div></div>`);

@@ -151,6 +151,22 @@ try {
   r = await admin('GET', `/api/messages/${bulkId}/export`);
   check('report CSV', String(r.data).includes('bounce@client.com'));
 
+  // Open tracking
+  const raviRaw = (ravi?.raw || '').replace(/=\r?\n/g, '').replace(/=3D/g, '=');
+  const pixelUrl = (raviRaw.match(/\/u\/o\/\d+\.[A-Za-z0-9_-]+\.gif/) || [])[0];
+  check('tracking image in bulk email', Boolean(pixelUrl));
+  let px = await fetch(`${B}${pixelUrl}`);
+  check('tracking image served', px.status === 200 && px.headers.get('content-type') === 'image/gif');
+  await fetch(`${B}${pixelUrl}`);
+  px = await fetch(`${B}${pixelUrl.replace(/\.[A-Za-z0-9_-]+\.gif$/, '.forged.gif')}`);
+  r = await admin('GET', `/api/messages/${bulkId}/recipients?status=sent&opened=yes`);
+  check('open recorded once per person, count kept', px.status === 200 && r.data.total === 1 && r.data.rows[0].email === 'ravi@client.com' && r.data.rows[0].open_count === 2, JSON.stringify(r.data.rows));
+  r = await admin('GET', `/api/messages/${bulkId}`);
+  check('open count in report', Number(r.data.opened) === 1 && r.data.track_opens === true);
+  r = await admin('GET', `/api/messages/${bulkId}/export`);
+  check('report CSV has opens', /Times opened/.test(String(r.data)) && /ravi@client\.com,[^\n]*,yes,/.test(String(r.data)));
+  check('single email has tracking image', /\/u\/o\/\d+\./.test(single.raw.replace(/=\r?\n/g, '')));
+
   // Unsubscribe link from the email
   const unsubUrl = (ravi?.raw.replace(/=\r?\n/g, '').match(/\/u\/[A-Za-z0-9_.=-]+/) || [])[0]?.replace(/=3D/g, '=');
   r = await admin('GET', unsubUrl || '/u/none');
@@ -166,6 +182,7 @@ try {
   check('history search', r.data.total === 1 && r.data.rows[0].id === singleId);
   r = await admin('GET', '/api/dashboard');
   check('dashboard numbers', r.status === 200 && r.data.sent_today >= 3, JSON.stringify({ sent: r.data.sent_today }));
+  check('dashboard open rate', Number(r.data.opened_30) === 1 && Number(r.data.tracked_30) >= 3 && r.data.recent.some((m) => m.id === bulkId), JSON.stringify({ o: r.data.opened_30, t: r.data.tracked_30 }));
 
   // Templates
   r = await admin('POST', '/api/templates', { name: 'Welcome', subject: 'Hi {{first_name}}', html: '<p>Welcome!</p>' });

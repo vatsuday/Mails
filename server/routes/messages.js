@@ -3,7 +3,7 @@ import { config } from '../config.js';
 import { all, get, run, tx } from '../db.js';
 import {
   assertConfigured, buildBulkMail, createTransport, friendlySmtpError, fromHeader, getSmtpSettings,
-  toNodemailerAttachments, wrapHtml,
+  toNodemailerAttachments, trackingPixel, wrapHtml,
 } from '../mailer.js';
 import {
   HttpError, badRequest, cleanHtml, csvCell, htmlToText, likePattern, notFound, paging, parseAddressList,
@@ -65,7 +65,8 @@ async function progress(messageId) {
            COUNT(*) FILTER (WHERE status = 'sent') AS sent,
            COUNT(*) FILTER (WHERE status = 'failed') AS failed,
            COUNT(*) FILTER (WHERE status = 'skipped') AS skipped,
-           COUNT(*) FILTER (WHERE status IN ('pending', 'sending')) AS pending
+           COUNT(*) FILTER (WHERE status IN ('pending', 'sending')) AS pending,
+           COUNT(*) FILTER (WHERE opened_at IS NOT NULL) AS opened
     FROM em_recipients WHERE message_id = :id`, { id: messageId });
   return { ...msg, ...counts };
 }
@@ -114,9 +115,10 @@ r.post('/messages/send', async (req, res) => {
   await assertDailyLimit(s, 1);
 
   const msgId = await tx(async () => {
-    const msg = await get(`INSERT INTO em_messages (user_id, kind, subject, html, from_name, reply_to, cc, bcc, status, started_at)
-                           VALUES (:userId, 'single', :subject, :html, :fromName, :replyTo, :cc, :bcc, 'sending', now()) RETURNING id`, {
+    const msg = await get(`INSERT INTO em_messages (user_id, kind, subject, html, from_name, reply_to, cc, bcc, status, started_at, track_opens, base_url)
+                           VALUES (:userId, 'single', :subject, :html, :fromName, :replyTo, :cc, :bcc, 'sending', now(), :track, :baseUrl) RETURNING id`, {
       userId: req.user.id, subject, html, fromName: str(b.fromName, 100), replyTo, cc: cc.join(', '), bcc: bcc.join(', '),
+      track: b.trackOpens !== false, baseUrl: baseUrl(req),
     });
     await run("INSERT INTO em_recipients (message_id, email, status, attempts, claimed_at) VALUES (:id, :email, 'sending', 1, now())", { id: msg.id, email: to.join(', ') });
     await saveAttachments(msg.id, files, b.keepAttachments, positiveInt(b.fromMessageId), req.user);
@@ -135,7 +137,7 @@ async function deliverSingle(msgId, s) {
       from: fromHeader(s, msg.from_name),
       to: rec.email,
       subject: msg.subject,
-      html: wrapHtml(msg.html),
+      html: wrapHtml(msg.html + trackingPixel(msg, rec.id)),
       text: htmlToText(msg.html),
       attachments,
     };
@@ -222,10 +224,10 @@ r.post('/messages/bulk', async (req, res) => {
   })).map((x) => x.email));
 
   const id = await tx(async () => {
-    const msg = await get(`INSERT INTO em_messages (user_id, kind, subject, html, from_name, reply_to, add_unsubscribe, source, status, base_url)
-                           VALUES (:userId, 'bulk', :subject, :html, :fromName, :replyTo, :unsub, :source, 'queued', :baseUrl) RETURNING id`, {
+    const msg = await get(`INSERT INTO em_messages (user_id, kind, subject, html, from_name, reply_to, add_unsubscribe, source, status, base_url, track_opens)
+                           VALUES (:userId, 'bulk', :subject, :html, :fromName, :replyTo, :unsub, :source, 'queued', :baseUrl, :track) RETURNING id`, {
       userId: req.user.id, subject, html, fromName: str(b.fromName, 100), replyTo,
-      unsub: Boolean(b.addUnsubscribe), source: str(b.source, 200), baseUrl: baseUrl(req),
+      unsub: Boolean(b.addUnsubscribe), source: str(b.source, 200), baseUrl: baseUrl(req), track: b.trackOpens !== false,
     });
     const rows = valid.map((v) => ({ ...v, status: suppressed.has(v.email) ? 'skipped' : 'pending', error: suppressed.has(v.email) ? 'Unsubscribed' : null }));
     for (let i = 0; i < rows.length; i += 2000) {
@@ -372,8 +374,8 @@ r.get('/messages', async (req, res) => {
     AND (CAST(:q AS text) IS NULL OR m.subject ILIKE :q ESCAPE '\\' OR m.source ILIKE :q ESCAPE '\\'
          OR EXISTS (SELECT 1 FROM em_recipients x WHERE x.message_id = m.id AND x.email ILIKE :q ESCAPE '\\'))`;
   const rows = await all(`
-    SELECT m.id, m.kind, m.subject, m.status, m.source, m.created_at, m.finished_at, u.name AS user_name,
-           c.total, c.sent, c.failed, c.skipped, c.pending, c.first_email,
+    SELECT m.id, m.kind, m.subject, m.status, m.source, m.created_at, m.finished_at, m.track_opens, u.name AS user_name,
+           c.total, c.sent, c.failed, c.skipped, c.pending, c.opened, c.first_email,
            (SELECT COUNT(*) FROM em_attachments a WHERE a.message_id = m.id) AS attachments
     FROM em_messages m
     LEFT JOIN em_users u ON u.id = m.user_id
@@ -383,6 +385,7 @@ r.get('/messages', async (req, res) => {
              COUNT(*) FILTER (WHERE status = 'failed') AS failed,
              COUNT(*) FILTER (WHERE status = 'skipped') AS skipped,
              COUNT(*) FILTER (WHERE status IN ('pending', 'sending')) AS pending,
+             COUNT(*) FILTER (WHERE opened_at IS NOT NULL) AS opened,
              MIN(email) AS first_email
       FROM em_recipients WHERE message_id = m.id) c ON TRUE
     WHERE ${where}
@@ -396,9 +399,13 @@ r.get('/messages/:id', async (req, res) => {
   const user = msg.user_id ? await get('SELECT name, email FROM em_users WHERE id = :id', { id: msg.user_id }) : null;
   const attachments = await all('SELECT id, filename, content_type, size FROM em_attachments WHERE message_id = :id ORDER BY id', { id: msg.id });
   const p = await progress(msg.id);
-  const first = msg.kind === 'single' ? await get('SELECT email, error FROM em_recipients WHERE message_id = :id LIMIT 1', { id: msg.id }) : null;
+  const first = msg.kind === 'single'
+    ? await get('SELECT email, error, open_count, opened_at, last_opened_at FROM em_recipients WHERE message_id = :id LIMIT 1', { id: msg.id }) : null;
   delete msg.base_url;
-  res.json({ ...msg, ...p, user, attachments, to: first?.email || '', error: first?.error || null });
+  res.json({
+    ...msg, ...p, user, attachments, to: first?.email || '', error: first?.error || null,
+    open_count: first?.open_count ?? null, opened_at: first?.opened_at ?? null, last_opened_at: first?.last_opened_at ?? null,
+  });
 });
 
 r.get('/messages/:id/recipients', async (req, res) => {
@@ -407,19 +414,24 @@ r.get('/messages/:id/recipients', async (req, res) => {
   const params = {
     id: msg.id, limit, offset, q: likePattern(req.query.q),
     status: ['pending', 'sending', 'sent', 'failed', 'skipped'].includes(req.query.status) ? req.query.status : null,
+    opened: req.query.opened === 'yes' ? true : req.query.opened === 'no' ? false : null,
   };
   const where = `message_id = :id AND (CAST(:status AS text) IS NULL OR status = :status)
+                 AND (CAST(:opened AS boolean) IS NULL OR (opened_at IS NOT NULL) = :opened)
                  AND (CAST(:q AS text) IS NULL OR email ILIKE :q ESCAPE '\\' OR name ILIKE :q ESCAPE '\\')`;
-  const rows = await all(`SELECT id, email, name, data, status, error, attempts, sent_at FROM em_recipients WHERE ${where} ORDER BY id LIMIT :limit OFFSET :offset`, params);
+  const rows = await all(`SELECT id, email, name, data, status, error, attempts, sent_at, open_count, opened_at, last_opened_at FROM em_recipients WHERE ${where} ORDER BY id LIMIT :limit OFFSET :offset`, params);
   const { n } = await get(`SELECT COUNT(*) AS n FROM em_recipients WHERE ${where}`, params);
   res.json({ rows, total: n });
 });
 
 r.get('/messages/:id/export', async (req, res) => {
   const msg = await loadMessage(req.params.id, req.user);
-  const rows = await all('SELECT email, name, status, error, sent_at FROM em_recipients WHERE message_id = :id ORDER BY id', { id: msg.id });
-  const lines = [['Email', 'Name', 'Status', 'Sent at', 'Error'].join(',')];
-  for (const x of rows) lines.push([x.email, x.name, x.status, x.sent_at || '', x.error || ''].map(csvCell).join(','));
+  const rows = await all('SELECT email, name, status, error, sent_at, open_count, opened_at, last_opened_at FROM em_recipients WHERE message_id = :id ORDER BY id', { id: msg.id });
+  const iso = (d) => (d ? new Date(d).toISOString() : '');
+  const lines = [['Email', 'Name', 'Status', 'Sent at', 'Opened', 'First opened', 'Last opened', 'Times opened', 'Error'].join(',')];
+  for (const x of rows) {
+    lines.push([x.email, x.name, x.status, iso(x.sent_at), x.opened_at ? 'yes' : 'no', iso(x.opened_at), iso(x.last_opened_at), x.open_count || 0, x.error || ''].map(csvCell).join(','));
+  }
   res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="email-${msg.id}-report.csv"` });
   res.send(`﻿${lines.join('\r\n')}`);
 });
@@ -451,7 +463,9 @@ r.get('/dashboard', async (req, res) => {
     SELECT COUNT(*) FILTER (WHERE r.status = 'sent' AND r.sent_at >= (date_trunc('day', now() AT TIME ZONE :tz) AT TIME ZONE :tz)) AS sent_today,
            COUNT(*) FILTER (WHERE r.status = 'sent' AND r.sent_at >= now() - interval '30 days') AS sent_30,
            COUNT(*) FILTER (WHERE r.status = 'failed' AND m.created_at >= now() - interval '30 days') AS failed_30,
-           COUNT(*) FILTER (WHERE r.status IN ('pending', 'sending')) AS queued
+           COUNT(*) FILTER (WHERE r.status IN ('pending', 'sending')) AS queued,
+           COUNT(*) FILTER (WHERE r.status = 'sent' AND m.track_opens AND r.sent_at >= now() - interval '30 days') AS tracked_30,
+           COUNT(*) FILTER (WHERE r.status = 'sent' AND m.track_opens AND r.sent_at >= now() - interval '30 days' AND r.opened_at IS NOT NULL) AS opened_30
     FROM em_recipients r JOIN em_messages m ON m.id = r.message_id WHERE ${mine}`, params);
   const daily = await all(`
     SELECT to_char(r.sent_at AT TIME ZONE :tz, 'YYYY-MM-DD') AS day, COUNT(*) AS n
@@ -461,9 +475,16 @@ r.get('/dashboard', async (req, res) => {
   const active = await all(`
     SELECT m.id, m.subject, m.status, m.created_at FROM em_messages m
     WHERE ${mine} AND m.kind = 'bulk' AND m.status IN ('queued', 'sending', 'paused') ORDER BY m.created_at DESC LIMIT 5`, params);
+  const recent = await all(`
+    SELECT m.id, m.kind, m.subject, m.created_at, c.sent, c.opened
+    FROM em_messages m
+    JOIN LATERAL (SELECT COUNT(*) FILTER (WHERE status = 'sent') AS sent, COUNT(*) FILTER (WHERE opened_at IS NOT NULL) AS opened
+                  FROM em_recipients WHERE message_id = m.id) c ON TRUE
+    WHERE ${mine} AND m.status = 'done' AND m.track_opens AND c.sent > 0
+    ORDER BY m.created_at DESC LIMIT 6`, params);
   const { contacts } = await get('SELECT COUNT(DISTINCT email) AS contacts FROM em_contacts');
   const s = await getSmtpSettings();
-  res.json({ ...stats, contacts, daily, active, dailyLimit: s.dailyLimit || 0, sentTodayAll: s.dailyLimit ? await sentTodayCount() : null });
+  res.json({ ...stats, contacts, daily, active, recent, dailyLimit: s.dailyLimit || 0, sentTodayAll: s.dailyLimit ? await sentTodayCount() : null });
 });
 
 export default r;

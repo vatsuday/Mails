@@ -231,11 +231,15 @@ async function dashboard(main) {
         <a href="#/templates"><span class="qi">${icon('template')}</span><span><b>Templates</b><span>Reusable email designs</span></span></a>
       </div>
       <div class="stats">
-        <div class="stat"><div class="label">Sent today</div><div class="value">${fmtNum(d.sent_today)}</div>
-          ${d.dailyLimit ? html`<div class="sub">${fmtNum(d.sentTodayAll)} of ${fmtNum(d.dailyLimit)} daily limit used</div>` : ''}</div>
-        <div class="stat"><div class="label">Sent · 30 days</div><div class="value">${fmtNum(d.sent_30)}</div></div>
-        <div class="stat"><div class="label">Failed · 30 days</div><div class="value" style="color:${d.failed_30 ? 'var(--danger)' : 'inherit'}">${fmtNum(d.failed_30)}</div></div>
-        <div class="stat"><div class="label">Waiting to send</div><div class="value">${fmtNum(d.queued)}</div></div>
+        <div class="stat"><span class="stat-icon">${icon('send')}</span><div class="label">Sent today</div><div class="value">${fmtNum(d.sent_today)}</div>
+          ${d.dailyLimit ? html`<div class="sub">${fmtNum(d.sentTodayAll)} of ${fmtNum(d.dailyLimit)} daily limit used</div>
+            <div class="progress mini" style="margin-top:8px"><i class="p-sent" style="width:${Math.min(100, (100 * d.sentTodayAll) / d.dailyLimit)}%"></i></div>` : ''}</div>
+        <div class="stat"><span class="stat-icon">${icon('chart')}</span><div class="label">Sent · 30 days</div><div class="value">${fmtNum(d.sent_30)}</div></div>
+        <div class="stat stat-open"><span class="stat-icon">${icon('eye')}</span><div class="label">Opened · 30 days</div>
+          <div class="value">${Number(d.tracked_30) ? `${Math.round((100 * d.opened_30) / d.tracked_30)}%` : '—'}</div>
+          <div class="sub">${Number(d.tracked_30) ? `${fmtNum(d.opened_30)} of ${fmtNum(d.tracked_30)} tracked emails` : 'No tracked emails yet'}</div></div>
+        <div class="stat"><span class="stat-icon danger">${icon('alertOff')}</span><div class="label">Failed · 30 days</div><div class="value" style="color:${d.failed_30 ? 'var(--danger)' : 'inherit'}">${fmtNum(d.failed_30)}</div>
+          ${Number(d.queued) ? html`<div class="sub">${fmtNum(d.queued)} waiting to send</div>` : ''}</div>
       </div>
       <div class="grid-2">
         <div class="card">
@@ -246,6 +250,17 @@ async function dashboard(main) {
           <div class="card-title"><h2>Bulk sends in progress</h2><a class="btn sm ghost" href="#/history?kind=bulk">All bulk sends</a></div>
           <div id="active-list">${d.active.length ? '' : html`<div class="empty small">Nothing is sending right now.</div>`}</div>
         </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><h2>How your recent emails did</h2><a class="btn sm ghost" href="#/history">All reports</a></div>
+        ${d.recent.length ? html`<div class="perf">${d.recent.map((m) => {
+          const pct = Math.round((100 * Number(m.opened)) / Math.max(1, Number(m.sent)));
+          return html`<a class="perf-row" href="#/history/${m.id}">
+            <div class="grow"><div class="ellipsis"><b>${m.subject || '(no subject)'}</b></div>
+              <div class="tiny muted">${timeAgo(m.created_at)} · ${m.kind === 'bulk' ? `${fmtNum(m.sent)} sent` : 'single email'}</div></div>
+            <div class="perf-bar"><i style="width:${pct}%"></i></div>
+            <div class="perf-num"><b>${pct}%</b><span class="tiny muted">${fmtNum(m.opened)} opened</span></div></a>`;
+        })}</div>` : html`<div class="empty small">${icon('eye')}<p>Open rates appear here after you send emails with <b>Track opens</b> switched on.</p></div>`}
       </div>
     </div>`);
 

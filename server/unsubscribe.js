@@ -1,8 +1,9 @@
-// Public unsubscribe page linked from bulk emails. A POST is required so link scanners can't unsubscribe people.
+// Public pages linked from sent emails: the open-tracking image and the unsubscribe page.
+// Unsubscribing needs a POST so link scanners can't unsubscribe people.
 import express, { Router } from 'express';
 import { config } from './config.js';
 import { run } from './db.js';
-import { readUnsubscribeToken } from './secret.js';
+import { readOpenToken, readUnsubscribeToken } from './secret.js';
 import { escapeHtml } from './util.js';
 
 const r = Router();
@@ -17,6 +18,18 @@ const page = (title, body) => `<!doctype html><html lang="en"><head><meta charse
   button:hover{background:#4338ca}
   @media (prefers-color-scheme: dark){body{background:#0f1117;color:#e5e7eb}.card{background:#181b24;box-shadow:none}p{color:#9ca3af}}
 </style></head><body><div class="card">${body}</div></body></html>`;
+
+const PIXEL = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+
+r.get('/u/o/:token', async (req, res) => {
+  const id = readOpenToken(req.params.token);
+  if (id) {
+    await run(`UPDATE em_recipients SET open_count = open_count + 1, opened_at = COALESCE(opened_at, now()), last_opened_at = now()
+               WHERE id = :id AND status = 'sent'`, { id }).catch((err) => console.error('[open] not recorded:', err.message));
+  }
+  res.set({ 'Content-Type': 'image/gif', 'Cache-Control': 'no-store, no-cache, must-revalidate, private', Pragma: 'no-cache' });
+  res.send(PIXEL);
+});
 
 r.get('/u/:token', (req, res) => {
   const email = readUnsubscribeToken(req.params.token);

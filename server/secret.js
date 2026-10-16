@@ -48,6 +48,16 @@ export function unsubscribeToken(email) {
   return `${Buffer.from(email).toString('base64url')}.${hmac(`unsub:${email}`)}`;
 }
 
+/** Signed id for the open-tracking image, so nobody can mark other recipients as opened. */
+export const openToken = (recipientId) => `${recipientId}.${hmac(`open:${recipientId}`)}`;
+
+export function readOpenToken(token) {
+  const [id, sig] = String(token || '').replace(/\.gif$/i, '').split('.');
+  if (!/^\d{1,18}$/.test(id || '') || !sig) return null;
+  const expected = hmac(`open:${id}`);
+  return sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)) ? id : null;
+}
+
 export function readUnsubscribeToken(token) {
   const [b64, sig] = String(token || '').split('.');
   if (!b64 || !sig) return null;

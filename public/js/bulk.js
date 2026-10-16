@@ -62,6 +62,7 @@ export async function render(main) {
     fromName: handoff?.fromName || '',
     replyTo: handoff?.replyTo ?? state.user.email,
     addUnsubscribe: handoff?.addUnsubscribe ?? true,
+    trackOpens: handoff?.trackOpens ?? true,
     keepAttachments: handoff?.keepAttachments || [],
     fromMessageId: handoff?.fromMessageId || null,
     previewIndex: 0,
@@ -157,6 +158,7 @@ export async function render(main) {
     s.fromName = $('#b-from').value;
     s.replyTo = $('#b-reply').value;
     s.addUnsubscribe = $('#b-unsub').checked;
+    s.trackOpens = $('#b-track').checked;
   }
   function validateMessage() {
     if (s.step === 2) captureMessage();
@@ -308,6 +310,7 @@ export async function render(main) {
               <span class="hint">Sent from <b>${state.app.fromEmail || '(not set)'}</b></span></label>
             <label class="field">Replies go to<input id="b-reply" type="email" value="${s.replyTo}"></label>
             <label class="check"><input type="checkbox" id="b-unsub" ${s.addUnsubscribe ? 'checked' : ''}><span>Add an unsubscribe link<br><span class="hint">Recommended for newsletters and offers. Keeps you out of spam folders.</span></span></label>
+            <label class="check"><input type="checkbox" id="b-track" ${s.trackOpens ? 'checked' : ''}><span>Track opens<br><span class="hint">See who opened the email in <b>Sent &amp; reports</b>.</span></span></label>
           </div>
         </div>
       </div>
@@ -387,6 +390,7 @@ export async function render(main) {
               <dt>Replies to</dt><dd>${s.replyTo || '—'}</dd>
               <dt>Attachments</dt><dd>${att?.count() || 0}</dd>
               <dt>Unsubscribe link</dt><dd>${s.addUnsubscribe ? 'Yes' : 'No'}</dd>
+              <dt>Track opens</dt><dd>${s.trackOpens ? 'Yes' : 'No'}</dd>
             </dl>
           </div>
           ${unknown.length ? html`<div class="alert error">${icon('alert')}<div>These fields don't exist in your recipients and will be empty: <b>${unknown.map((v) => `{{${v}}}`).join(', ')}</b></div></div>` : ''}
@@ -459,7 +463,7 @@ export async function render(main) {
       method: 'POST',
       timeout: 120000,
       body: {
-        subject: s.subject, html: s.html, fromName: s.fromName, replyTo: s.replyTo, addUnsubscribe: s.addUnsubscribe,
+        subject: s.subject, html: s.html, fromName: s.fromName, replyTo: s.replyTo, addUnsubscribe: s.addUnsubscribe, trackOpens: s.trackOpens,
         source: [s.file?.name, ...selectedLists().map((l) => l.name), s.pasted.trim() ? 'pasted addresses' : ''].filter(Boolean).join(', ').slice(0, 200),
         recipients, listIds,
         attachments: att?.payload() || [], keepAttachments: att?.keepIds() || [], fromMessageId: s.fromMessageId,

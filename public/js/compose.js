@@ -211,6 +211,7 @@ export async function render(main) {
             <span class="hint">Sent from <b>${state.app.fromEmail || '(not set)'}</b>. Leave empty to use the default name.</span></label>
           <label class="field">Replies go to<input id="reply-to" type="email" placeholder="${state.user.email}" value="${start.replyTo ?? state.user.email}">
             <span class="hint">Where answers to this email will arrive.</span></label>
+          <label class="check"><input type="checkbox" id="track-opens" ${start.trackOpens === false ? '' : 'checked'}><span>Track opens<br><span class="hint">See when it was opened in <b>Sent &amp; reports</b>.</span></span></label>
         </div>
         <div class="card stack small">
           <div class="section-title">Tips</div>
@@ -307,7 +308,7 @@ export async function render(main) {
     const body = {
       to: to.get(), cc: cc.get(), bcc: bcc.get(), subject: $('#subject').value, html: editor.getHTML(),
       fromName: $('#from-name').value, replyTo: $('#reply-to').value, attachments: att.payload(),
-      keepAttachments: att.keepIds(), fromMessageId: start.fromMessageId,
+      keepAttachments: att.keepIds(), fromMessageId: start.fromMessageId, trackOpens: $('#track-opens').checked,
     };
     try {
       const r = await busy(btn, () => api('/messages/send', { method: 'POST', body, timeout: 120000 }), { quiet: true });
