@@ -28,11 +28,16 @@ async function connect() {
       ssl: local ? false : { rejectUnauthorized: false },
       max: config.pgPoolMax,
       idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 10000,
+      connectionTimeoutMillis: 15000,
     });
     pool.on('error', (err) => console.error('[db] idle client error:', err.message));
     // The schema only uses CREATE ... IF NOT EXISTS, so applying it on every cold start is safe.
-    await pool.query(schemaSql());
+    try {
+      await pool.query(schemaSql());
+    } catch (err) {
+      pool.end().catch(() => {});
+      throw err;
+    }
     return {
       query: async (sql, params, client) => {
         const r = await (client || pool).query(sql, params);
@@ -75,8 +80,18 @@ async function connect() {
   };
 }
 
-const ready = connect();
-ready.catch((err) => console.error('[db] connection setup failed:', err.message));
+// A failed attempt is forgotten so the next request retries (a warm serverless instance would otherwise stay broken).
+let pending = null;
+function getDriver() {
+  if (driver) return driver;
+  pending ||= connect().then((d) => (driver = d), (err) => {
+    pending = null;
+    console.error('[db] connection setup failed:', err.message);
+    throw err;
+  });
+  return pending;
+}
+getDriver().catch(() => {});
 
 // Named parameters (:name) are converted to $1..$n; the same name reuses its number.
 const converted = new Map();
@@ -97,7 +112,7 @@ function convert(sql) {
 }
 
 async function exec(sql, params = {}) {
-  const d = driver || (driver = await ready);
+  const d = await getDriver();
   const { text, names } = convert(sql);
   const values = names.map((n) => (params[n] === undefined ? null : params[n]));
   return d.query(text, values, txStore.getStore());
@@ -110,17 +125,17 @@ export const run = (sql, params) => exec(sql, params);
 /** Runs fn inside a transaction; queries made inside fn (even in nested calls) use it automatically. */
 export async function tx(fn) {
   if (txStore.getStore()) return fn();
-  const d = driver || (driver = await ready);
+  const d = await getDriver();
   return d.transaction((client) => txStore.run(client, fn));
 }
 
 export async function rawExec(sql) {
-  const d = driver || (driver = await ready);
+  const d = await getDriver();
   return d.exec(sql);
 }
 
 export async function closeDb() {
-  const d = driver || (driver = await ready);
+  const d = await getDriver();
   await d.end();
 }
 
