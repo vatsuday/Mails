@@ -1,9 +1,10 @@
 // Bulk send wizard: 1. recipients  2. message  3. review & send.
 import { go, setLeaveGuard } from './app.js';
 import {
-  $, $$, api, busy, confirmBox, dropzone, fmtNum, html, icon, mount, previewDoc, raw, readBase64, toast,
+  $, $$, api, busy, confirmBox, debounce, dropzone, fmtNum, html, icon, mount, previewDoc, previewFrame, raw, readBase64, store, toast,
 } from './common.js';
 import { attachments, pickTemplate, saveAsTemplate } from './compose.js';
+import { STARTERS } from './templates.js';
 import { createEditor } from './editor.js';
 import { buildVars, merge, normKey, variablesUsed } from './merge.js';
 import { run } from './runner.js';
@@ -168,6 +169,12 @@ export async function render(main) {
   }
 
   // ---- step 1: recipients ----
+  const summaryHtml = (loc) => html`<div><b>${fmtNum(totalEstimate())}</b>recipients</div>
+    ${loc.invalid ? html`<div style="color:var(--danger)"><b>${fmtNum(loc.invalid)}</b>invalid (skipped)</div>` : ''}
+    ${loc.dupes ? html`<div class="muted"><b>${fmtNum(loc.dupes)}</b>duplicates (skipped)</div>` : ''}`;
+  // Updates only the counts, so typing doesn't redraw the page (a redraw would swallow a click on Next).
+  const drawSummary = () => { const el = $('#r-summary'); if (el) mount(el, summaryHtml(localRecipients())); };
+
   function drawRecipients() {
     const loc = localRecipients();
     const body = $('#step-body');
@@ -181,11 +188,7 @@ export async function render(main) {
         <div id="tab-body"></div>
       </div>
       <div class="sticky-actions">
-        <div class="summary-box">
-          <div><b>${fmtNum(totalEstimate())}</b>recipients</div>
-          ${loc.invalid ? html`<div style="color:var(--danger)"><b>${fmtNum(loc.invalid)}</b>invalid (skipped)</div>` : ''}
-          ${loc.dupes ? html`<div class="muted"><b>${fmtNum(loc.dupes)}</b>duplicates (skipped)</div>` : ''}
-        </div>
+        <div class="summary-box" id="r-summary">${summaryHtml(loc)}</div>
         <button class="btn lg" id="next1">Next: write message ${icon('right')}</button>
       </div>`);
     $$('[data-tab]', body).forEach((b) => { b.onclick = () => { s.tab = b.dataset.tab; drawRecipients(); }; });
@@ -281,19 +284,27 @@ export async function render(main) {
       <span class="hint">You can paste a column straight from Excel. Formats: <code>email</code>, <code>Name &lt;email&gt;</code> or <code>email, Name</code>.</span></label>`);
     const ta = $('#paste');
     ta.focus();
-    ta.onchange = () => { s.pasted = ta.value; drawRecipients(); };
-    ta.oninput = () => { s.pasted = ta.value; };
+    const update = debounce(drawSummary, 250);
+    ta.oninput = () => { s.pasted = ta.value; update(); };
   }
 
   // ---- step 2: message ----
   function drawMessage() {
     const body = $('#step-body');
+    const tplHidden = store.get('bulk:tplHidden', false);
     mount(body, html`
+      <div class="card tpl-strip ${tplHidden ? 'hidden' : ''}" id="tpl-strip">
+        <div class="card-title" style="margin-bottom:10px"><div><h2>Start from a template</h2>
+          <p class="small muted">Pick a design, then change the text. Fields like {{first_name}} are filled in for each person.</p></div>
+          <div class="row"><a class="btn sm ghost" href="#/templates">${icon('template')} Manage templates</a>
+            <button class="icon-btn" id="tpl-hide" title="Hide templates">${icon('x')}</button></div></div>
+        <div class="tpl-row" id="tpl-row"><div class="loading-block" style="padding:20px"><span class="spinner"></span></div></div>
+      </div>
       <div class="compose">
         <div class="card stack">
           <label class="field">Subject<input id="b-subject" value="${s.subject}" maxlength="300" placeholder="e.g. Hello {{first_name}}, your invoice for October"></label>
           <div><div class="row between wrap" style="margin-bottom:8px"><span class="section-title">Message</span>
-            <div class="row"><button class="btn sm secondary" id="b-tpl">${icon('template')} Use template</button><button class="btn sm ghost" id="b-save-tpl">Save as template</button></div></div>
+            <div class="row"><button class="btn sm secondary" id="b-tpl">${icon('template')} Templates</button><button class="btn sm ghost" id="b-save-tpl">Save as template</button></div></div>
             <div id="b-editor"></div></div>
           <div id="b-attach"></div>
         </div>
@@ -340,14 +351,53 @@ export async function render(main) {
         editor.insertHTML('<a href="{{unsubscribe_url}}">Unsubscribe</a>');
       } else editor.insertText(tag);
     });
-    $('#b-tpl').onclick = async () => {
-      const t = await pickTemplate();
-      if (!t) return;
-      if (!editor.isEmpty() && !await confirmBox('Replace the message?', 'The template will replace what you have written.', { ok: 'Use template' })) return;
-      if (t.subject) subj.value = t.subject;
+    const applyTemplate = async (t, key) => {
+      const current = editor.getHTML();
+      if (!editor.isEmpty() && current !== t.html
+        && !await confirmBox(t.blank ? 'Clear the message?' : 'Replace the message?', t.blank ? 'What you have written will be removed.' : 'The template will replace what you have written.', { ok: t.blank ? 'Clear' : 'Use template' })) return;
+      if (t.subject || t.blank) subj.value = t.subject || '';
       editor.setHTML(t.html);
+      s.templateKey = key;
+      $$('[data-tk]', body).forEach((c) => c.classList.toggle('on', c.dataset.tk === key));
+      if (!t.blank) toast(`Template "${t.name}" added. Change the text as you like.`, 'ok');
+      editor.focus();
     };
-    $('#b-save-tpl').onclick = (e) => busy(e.currentTarget, () => saveAsTemplate(subj.value, editor.getHTML()));
+    const drawTemplates = async () => {
+      const row = $('#tpl-row');
+      if (!row) return;
+      try { s.templates ||= await api('/templates'); } catch { s.templates = []; }
+      const items = [
+        ['blank', { name: 'Blank', subject: '', html: '', blank: true }],
+        ...s.templates.map((t) => [`t${t.id}`, t]),
+        ...STARTERS.map((t, i) => [`s${i}`, { ...t, starter: true }]),
+      ];
+      mount(row, html`${items.map(([k, t]) => html`<button type="button" class="tpl-card ${s.templateKey === k ? 'on' : ''}" data-tk="${k}" title="${t.subject || t.name}">
+        <span class="tpl-thumb">${t.blank ? html`<span class="tpl-blank">${icon('plus')}</span>` : ''}</span>
+        <span class="tpl-meta"><b class="ellipsis">${t.name}</b><span class="tiny muted ellipsis">${t.blank ? 'Write your own' : t.starter ? 'Ready-made' : t.subject || 'Saved template'}</span></span>
+      </button>`)}`);
+      for (const [k, t] of items) {
+        const card = row.querySelector(`[data-tk="${k}"]`);
+        if (!t.blank) card.querySelector('.tpl-thumb').append(previewFrame(t.html, 'tpl-frame'));
+        card.onclick = () => applyTemplate(t, k);
+      }
+    };
+    drawTemplates();
+    $('#tpl-hide').onclick = () => { $('#tpl-strip').classList.add('hidden'); store.set('bulk:tplHidden', true); };
+    $('#b-tpl').onclick = async () => {
+      if ($('#tpl-strip').classList.contains('hidden')) {
+        $('#tpl-strip').classList.remove('hidden');
+        store.set('bulk:tplHidden', false);
+        $('#tpl-strip').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        return;
+      }
+      const t = await pickTemplate();
+      if (t) applyTemplate(t, `t${t.id}`);
+    };
+    $('#b-save-tpl').onclick = (e) => busy(e.currentTarget, async () => {
+      await saveAsTemplate(subj.value, editor.getHTML());
+      s.templates = null; // reload the strip so the new template shows up
+      drawTemplates();
+    });
     $('#back2').onclick = () => goStep(1);
     $('#next2').onclick = () => goStep(3);
     if (!s.subject) subj.focus();

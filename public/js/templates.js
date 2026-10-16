@@ -4,7 +4,7 @@ import { $, $$, api, busy, confirmBox, html, icon, modal, mount, previewDoc, tim
 import { createEditor } from './editor.js';
 import { isAdmin, state } from './state.js';
 
-const STARTERS = [
+export const STARTERS = [
   {
     name: 'Announcement',
     subject: 'Important update from {{company|our team}}',
