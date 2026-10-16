@@ -3,7 +3,7 @@
   "installCommand": "npm install --omit=dev",
   "buildCommand": "",
   "outputDirectory": "public",
-  "regions": ["sin1"],
+  "regions": ["hnd1"],
   "functions": {
     "api/index.js": {
       "maxDuration": 60,
