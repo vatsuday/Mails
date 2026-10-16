@@ -1,0 +1,26 @@
+{
+  "name": "company-mail",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Company email website: single and bulk email sending over SMTP, with staff logins, contacts, templates and delivery reports",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "smoke": "node scripts/smoke-test.js",
+    "deploy": "vercel deploy --prod"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "exceljs": "^4.4.0",
+    "express": "^5.3.0",
+    "nodemailer": "^10.1.1",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "smtp-server": "^3.19.22"
+  }
+}
